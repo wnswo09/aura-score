@@ -16,8 +16,16 @@
 import { CacheStorage, SampleLoader, Soundfont } from "https://cdn.jsdelivr.net/npm/smplr@1.0.0/+esm";
 
 const LEAD_IN = 0.2;    // seconds between pressing play and the first note
-const TAIL = 1.5;       // seconds to let the last chord ring before stopping
+const TAIL = 3;         // seconds to let the last chord ring before stopping
 const FADE = 0.03;      // seconds; cutting to zero instantly clicks
+// Every note in these soundfonts is a three-second recording, so a longer note
+// simply stops in mid-air: a slow whole note, or the held chord a piece ends on.
+// A long note is struck again under itself before the recording runs out, softer
+// so the new attack hides behind what is still sounding, the way a string player
+// changes bow.
+const BOW = 1.5;        // seconds between strikes
+const STROKE = 2.6;     // seconds each strike sounds; released before the recording ends
+const RESTRUCK = 0.7;   // loudness of the later strikes
 
 let context = null;
 let bus = null;
@@ -74,6 +82,37 @@ async function instruments(sounds, output, progress) {
   return made;
 }
 
+/** Play a note for its whole length, however long. */
+function sustain(instrument, note, velocity, time, duration) {
+  for (let at = 0; ; at += BOW) {
+    const left = duration - at;
+    instrument.start({
+      note,
+      velocity: at ? Math.round(velocity * RESTRUCK) : velocity,
+      time: time + at,
+      duration: Math.min(left, STROKE),
+    });
+    if (left <= STROKE) return;
+  }
+}
+
+/** Score time -> playing time, in quarter notes. They are the same until the
+ * ending, where the server stretches the last measures for the ritardando; its
+ * anchors mark the stretch and this fills in between them. */
+function stretch(anchors) {
+  return (quarters) => {
+    if (!anchors?.length || quarters <= anchors[0][0]) return quarters;
+    for (let i = 1; i < anchors.length; i++) {
+      const [score, playing] = anchors[i];
+      if (quarters <= score) {
+        const [before, playedBefore] = anchors[i - 1];
+        return playedBefore + ((playing - playedBefore) * (quarters - before)) / (score - before);
+      }
+    }
+    return anchors.at(-1)[1];
+  };
+}
+
 /** Where each cursor step sits, in quarter notes from the start. */
 function cursorSteps(osmd) {
   const cursor = osmd.cursor;
@@ -127,15 +166,21 @@ export class Player {
     for (const track of playback.tracks) {
       const instrument = made.get(track.sound);
       for (const [at, length, note, velocity] of track.notes) {
-        instrument.start({ note, velocity, time: start + at * perQuarter, duration: length * perQuarter });
+        sustain(instrument, note, velocity, start + at * perQuarter, length * perQuarter);
       }
     }
     this.made = made;
+    {
+      // The last chord dies away instead of holding its level to the end.
+      const [from, to, level] = playback.fade;
+      output.gain.setValueAtTime(1, start + from * perQuarter);
+      output.gain.linearRampToValueAtTime(level, start + to * perQuarter);
+    }
 
     this.start = start;
     this.perQuarter = perQuarter;
     this.end = playback.quarters * perQuarter + TAIL;
-    this.steps = cursorSteps(this.osmd);
+    this.steps = cursorSteps(this.osmd).map(stretch(playback.anchors));
     this.step = 0;
     this.osmd.cursor.show();
     this.set("playing");
@@ -159,6 +204,7 @@ export class Player {
     const output = this.output;
     this.output = null;
     if (output) {
+      output.gain.cancelScheduledValues(context.currentTime);
       output.gain.setTargetAtTime(0, context.currentTime, FADE / 3);
       setTimeout(() => output.disconnect(), FADE * 1000 * 4);
     }

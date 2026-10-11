@@ -282,7 +282,7 @@ async function render(score) {
   current = score;
   document.getElementById("score-title").textContent = score.title;
   document.getElementById("score-meta").textContent = [
-    score.key, score.time, score.tempo, `${score.measures}마디`, `주인공 ${score.lead}`, "Score in C",
+    score.key, score.time, score.tempo, `${score.measures}마디`, `주인공 ${score.lead}`, score.ending, "Score in C",
   ].join(" · ");
   document.getElementById("score-desc").textContent = score.description;
   document.getElementById("score-flow").replaceChildren(...score.flow.map(flowItem));

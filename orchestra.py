@@ -351,17 +351,51 @@ SHAPES = [
     "Arch. Open quietly, build to the climax about two thirds of the way through, and "
     "close quietly. The solo comes before the build begins.",
     "The lead begins alone. The piece opens with the solo; the orchestra gathers around "
-    "it section by section, the climax comes late, and the close is short.",
+    "it section by section, and the climax comes late, leaving room for a proper close.",
     "After the storm. The climax arrives around the middle. The solo follows it as a quiet "
     "reflection, and the theme returns transformed to end the piece.",
     "Dialogue. The lead and one other instrument trade the melody all the way through. The "
     "solo is a free, cadenza-like passage just before the final return, and the climax is "
     "that return.",
-    "Slow burn. One long growth from almost nothing to a climax near the end. The solo is "
-    "an early, hushed statement of the theme; the ending is brief and full.",
+    "Slow burn. One long growth from almost nothing to a climax late in the piece. The solo "
+    "is an early, hushed statement of the theme; after the climax the music takes its time "
+    "to come to rest.",
     "Two worlds. Two contrasting ideas, one restless and one calm, alternate and finally "
     "combine at the climax about three quarters through. The solo is the bridge between them.",
 ]
+
+
+@dataclass(frozen=True)
+class Ending:
+    """How a piece comes to rest. GPT picks one; the score marks it and the
+    playback performs it, because notes alone played in strict time just stop."""
+    id: str
+    label: str              # on the page
+    mark: str               # above the top staff where the slowing starts; "" for none
+    measures: int           # how many measures before the final chord the slowing starts
+    slow_to: float          # tempo the final chord is reached at, as a share of the tempo
+    chord: tuple            # (shortest, longest) the final chord sounds, in seconds
+    fermata: bool
+    fade: tuple             # (how far into the final chord it starts dying away, level it reaches)
+
+
+# The final chord's length is set in seconds, not beats: one written measure is
+# under two seconds at Allegro and nearly five at Adagio, and GPT may hold the
+# chord for one measure or two.
+ENDINGS = [
+    Ending("slowing", "느려지며 맺음", "rit.", 2, 0.62, (4.0, 6.0), True, (0.4, 0.4)),
+    Ending("fading", "사라지듯 맺음", "rit. e dim.", 2, 0.58, (5.0, 7.0), True, (0.0, 0.12)),
+    Ending("firm", "힘 있게 맺음", "", 1, 0.88, (3.0, 4.5), False, (0.6, 0.7)),
+]
+ENDING_BY_ID = {ending.id: ending for ending in ENDINGS}
+DEFAULT_ENDING = "slowing"
+
+
+def length_range(length):
+    """The requested length is a target: (fewest, most) measures GPT may use, so
+    it can give the ending the room it needs instead of stopping on a count."""
+    slack = max(2, length // 8)
+    return max(2, length - slack), length + slack
 
 
 def sections_for(length):

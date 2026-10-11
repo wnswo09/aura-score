@@ -59,6 +59,9 @@ first, the notes after.
   how the orchestra is used. Plain prose, no note names.
 - key, time_signature: choose from the allowed values.
 - lead: the instrument the piece is told through, its protagonist.
+- ending: how the piece closes. slowing: the music slows into a held chord,
+  right for most pieces. fading: it thins out and dies away to pp. firm: in
+  tempo, one strong final chord, only for a triumphant piece.
 - outline: the plan for the whole piece, settled before any notes. One entry per
   section, in order:
   - name: A, B, A', C, Coda... Material that returns takes a prime.
@@ -101,11 +104,13 @@ Example measures in 4/4:
 ## Hard rules
 1. The durations in every measure add up to exactly one bar: 4/4 = one whole
    note, 3/4 = 2., 2/4 = 2, 6/8 = 2. (six eighths). Count every measure.
-2. Stay inside each part's range and never exceed its number of simultaneous notes.
+2. Stay inside each part's range and never exceed its number of simultaneous
+   notes. That holds for the lead at the climax too: when the line wants to go
+   higher than the instrument can, give those bars to one that can.
 3. No tuplets, grace notes, or anything else not described above.
-4. The bars in the outline add up to exactly the requested length. Every
-   instrument appears in every section with exactly that section's number of
-   measures; a part with nothing to play in a measure writes R.
+4. The bars in the outline add up to a total inside the range the request
+   gives. Every instrument appears in every section with exactly that section's
+   number of measures; a part with nothing to play in a measure writes R.
 5. Give every part a dynamic at its first entrance and wherever the level changes.
 
 ## Tell a story; do not loop
@@ -141,11 +146,27 @@ be earned by things changing.
   request says where the climax and the solo fall; lay the sections out to fit
   it rather than reaching for the same layout every time.
 
+## The ending
+A piece that just stops has failed, however good the rest was. Land it.
+- The last section exists to end the piece. From 16 measures up it lasts at
+  least four measures, and nothing new starts in it.
+- Slow the motion as the end approaches: longer notes, fewer of them, the harmony
+  changing less often. The measure before the final chord prepares the tonic
+  with the dominant.
+- The melody reaches its last note on the downbeat of the final chord. It does
+  not arrive on the last beat, and it does not keep moving once it has arrived.
+- The final measure is the tonic chord alone, held for the whole measure by
+  every instrument playing in it: the root in the bass, the melody on a note of
+  the chord. After a loud or fast piece, hold it for two measures, tied.
+- The performance adds the ritardando and the pause on the last chord that your
+  ending calls for; write the notes plainly and do not shorten them to imitate it.
+- Take the measures the ending needs. The length is a target, not a deadline:
+  never cut the ending short to hit a number.
+
 ## Musical guidance
 - The whole orchestra shares one harmony, measure by measure. Settle the chord
   progression first, then voice it across the parts. Doubling a line in octaves
   is fine; notes that clash with the harmony by accident are not.
-- End on a cadence in the key.
 - Orchestrate idiomatically: strings carry the foundation, woodwinds color and
   answer, brass reinforce the climaxes, timpani mark tonic and dominant. Not
   everyone plays all the time.
@@ -171,10 +192,12 @@ def _brief(request):
         beat = f"quarter = {tempo.bpm} (if you choose 6/8, dotted quarter = {dotted})"
     fewest, most = orchestra.sections_for(request.length)
     sections = f"{fewest} to {most}" if fewest != most else str(fewest)
+    shortest, longest = orchestra.length_range(request.length)
     lines = [
         "Write an original piece to these specifications.",
         "",
-        f"Length: exactly {request.length} measures, planned in {sections} sections.",
+        f"Length: about {request.length} measures (anything from {shortest} to {longest}), "
+        f"planned in {sections} sections.",
         f"Tempo: {tempo.term}, {beat}.",
         f"Difficulty: {request.difficulty.prompt}",
     ]
@@ -248,6 +271,7 @@ def _schema(request):
         "key": {"type": "string", "enum": keys},
         "time_signature": {"type": "string", "enum": times},
         "lead": {"type": "string", "enum": leads},
+        "ending": {"type": "string", "enum": list(orchestra.ENDING_BY_ID)},
         "outline": {"type": "array", "items": section},
         "sections": {
             "type": "array",
@@ -330,7 +354,7 @@ def generate(request):
     log.info(
         "score: %s, %s mode, %d parts x %d bars, %.0fs, tokens in %d / out %d (reasoning %d), "
         "%d repairs, repetition exact %d%% / rhythm %d%% / %d looped bars",
-        response.model, request.mode, len(request.parts), request.length,
+        response.model, request.mode, len(request.parts), score["measures"],
         time.monotonic() - started, usage.input_tokens, usage.output_tokens, reasoning or 0,
         score["repairs"], repetition["exact"], repetition["rhythm"], repetition["loops"],
     )
