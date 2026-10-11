@@ -225,8 +225,8 @@ STYLES = [
     Style("game", "게임·애니 OST", "히사이시 조 · 우에마츠 노부오",
           "Game and anime soundtrack, in the manner of Joe Hisaishi and Nobuo Uematsu: warm, "
           "nostalgic, singable melody; simple diatonic harmony with pop-influenced "
-          "progressions (IV-V-iii-vi); gentle arpeggiated accompaniment in the strings; an "
-          "emotional build.",
+          "progressions (IV-V-iii-vi is a place to start, not a loop to stay in); gentle "
+          "arpeggiated accompaniment in the strings; an emotional build.",
           _counts("flute:2 oboe:1 clarinet:2 bassoon:1 horn:4 trumpet:2 trombone:2 timpani:1",
                   (10, 8, 6, 6, 4))),
 ]
@@ -271,10 +271,17 @@ def scaled(counts, size):
     return resized
 
 
-def simple_summaries():
-    """{style: {size: summary}} — the simple form shows the orchestra it will get."""
+def simple_orchestras():
+    """{style: {size: {summary, instruments}}} — the simple form shows the orchestra
+    it will get, and offers only those instruments as the lead."""
+    def describe(counts):
+        return {
+            "summary": summary(counts),
+            "instruments": [[instrument.id, instrument.ko] for instrument in can_lead(parts_from(counts))],
+        }
+
     return {
-        style.id: {size.id: summary(scaled(style.orchestra, size.id)) for size in SIMPLE_SIZES}
+        style.id: {size.id: describe(scaled(style.orchestra, size.id)) for size in SIMPLE_SIZES}
         for style in STYLES
     }
 
@@ -321,6 +328,48 @@ FORMS = [
            "contrasting episodes."),
 ]
 FORM_BY_ID = {choice.id: choice for choice in FORMS}
+
+# What a section is for and how thick it is. GPT plans the piece in these terms
+# before writing a note; the page shows the plan with the Korean labels.
+ROLES = {
+    "intro": "도입", "theme": "주제", "contrast": "대비", "development": "전개",
+    "solo": "솔로", "climax": "절정", "return": "재현", "coda": "종결",
+}
+TEXTURES = {"solo": "독주", "thin": "얇게", "medium": "중간", "full": "전체 합주"}
+# What the instruments under the melody do. Left to itself GPT keeps one figure
+# going for the whole piece, so the plan has to name one per section.
+ACCOMPANIMENTS = {
+    "sustained": "긴 화음", "arpeggio": "펼침화음", "repeated": "같은 음 반복",
+    "offbeat": "엇박", "pedal": "지속음", "countermelody": "대선율", "none": "반주 없음",
+}
+# From this length on, the lead instrument gets a solo passage.
+SOLO_FROM = 16
+# Where the solo and the climax fall. Given the same instructions every time, GPT
+# settles on one layout (theme, contrast, solo, climax, return, coda) for every
+# piece, so each request is handed one of these at random.
+SHAPES = [
+    "Arch. Open quietly, build to the climax about two thirds of the way through, and "
+    "close quietly. The solo comes before the build begins.",
+    "The lead begins alone. The piece opens with the solo; the orchestra gathers around "
+    "it section by section, the climax comes late, and the close is short.",
+    "After the storm. The climax arrives around the middle. The solo follows it as a quiet "
+    "reflection, and the theme returns transformed to end the piece.",
+    "Dialogue. The lead and one other instrument trade the melody all the way through. The "
+    "solo is a free, cadenza-like passage just before the final return, and the climax is "
+    "that return.",
+    "Slow burn. One long growth from almost nothing to a climax near the end. The solo is "
+    "an early, hushed statement of the theme; the ending is brief and full.",
+    "Two worlds. Two contrasting ideas, one restless and one calm, alternate and finally "
+    "combine at the climax about three quarters through. The solo is the bridge between them.",
+]
+
+
+def sections_for(length):
+    """How many sections a piece of this length should be planned in: (fewest, most)."""
+    for longest, span in [(8, (1, 2)), (15, (2, 3)), (23, (3, 4)), (32, (4, 6))]:
+        if length <= longest:
+            return span
+    return 6, 8
 
 # Simple form: three speeds, three lengths.
 SPEEDS = [
@@ -391,6 +440,7 @@ class Request:
     time: str               # "" lets GPT choose
     form: Choice
     style: Style | None
+    lead: Instrument | None  # the protagonist instrument; None lets GPT choose
     ensemble: str           # what the chosen size means for the writing; "" if none
     mood: str
     extra: str
@@ -406,6 +456,24 @@ def _number(value, low, high, what):
     return number
 
 
+def can_lead(parts):
+    """The instruments a piece can be told through: anything that carries a tune.
+    Timpani are left out unless there is nothing else."""
+    melodic = [part.instrument for part in parts if part.instrument.section != "percussion"]
+    return melodic or [part.instrument for part in parts]
+
+
+def _lead(payload, parts):
+    """The lead the user picked, which has to be one of the instruments playing."""
+    wanted = payload.get("lead") or ""
+    if not wanted:
+        return None
+    for instrument in can_lead(parts):
+        if instrument.id == wanted:
+            return instrument
+    raise ValueError("주인공 악기가 편성에 없습니다. 다른 악기를 고르거나 맡기기로 바꿔 주세요.")
+
+
 def _simple(payload):
     style = STYLE_BY_ID.get(payload.get("style"))
     if style is None:
@@ -419,9 +487,10 @@ def _simple(payload):
     if speed is None or length is None or size is None:
         raise ValueError("규모, 빠르기, 길이를 골라 주세요.")
 
+    parts = parts_from(scaled(style.orchestra, size.id))
     return Request(
         mode="simple",
-        parts=parts_from(scaled(style.orchestra, size.id)),
+        parts=parts,
         length=int(length.id),
         difficulty=DIFFICULTY_BY_ID[DEFAULT_DIFFICULTY],
         tempo=Tempo(speed.hint, int(speed.prompt)),
@@ -429,6 +498,7 @@ def _simple(payload):
         time="",
         form=FORM_BY_ID[""],
         style=style,
+        lead=_lead(payload, parts),
         ensemble=size.prompt,
         mood=", ".join(moods),
         extra=str(payload.get("extra", "")).strip()[:SIMPLE_EXTRA_MAX],
@@ -465,6 +535,7 @@ def _detailed(payload):
         time=time,
         form=form,
         style=STYLE_BY_ID.get(style_id),
+        lead=_lead(payload, parts),
         ensemble="",
         mood=str(payload.get("mood", "")).strip()[:MOOD_MAX],
         extra=str(payload.get("extra", "")).strip()[:EXTRA_MAX],

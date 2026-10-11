@@ -61,6 +61,13 @@
              min="{{ orchestra.BARS_MIN }}" max="{{ orchestra.BARS_MAX }}" value="{{ orchestra.BARS_DEFAULT }}">
     </label>
     <label class="field">
+      <span>주인공 악기 <span class="optional">(솔로를 맡습니다)</span></span>
+      <select name="lead">
+        <option value="">GPT 에게 맡기기</option>
+        {% for instrument in orchestra.INSTRUMENTS if instrument.section != "percussion" %}<option value="{{ instrument.id }}">{{ instrument.ko }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">
       <span>스타일 <span class="optional">(선택)</span></span>
       <select name="style">
         <option value="">없음</option>

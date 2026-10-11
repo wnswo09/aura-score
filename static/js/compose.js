@@ -27,10 +27,25 @@ function setUpSimple() {
   // Style picks the instruments, size the numbers; show what the pair adds up to.
   const summary = document.getElementById("style-orchestra");
   const orchestras = JSON.parse(document.getElementById("orchestras").textContent);
+  const leads = document.getElementById("lead-choices");
   const showOrchestra = () => {
     const style = form.querySelector('input[name="style"]:checked');
     const size = form.querySelector('input[name="size"]:checked').value;
-    if (style) summary.textContent = `이렇게 편성합니다: ${orchestras[style.value][size]}`;
+    if (!style) return;
+    const { summary: text, instruments } = orchestras[style.value][size];
+    summary.textContent = `이렇게 편성합니다: ${text}`;
+
+    // Only instruments that are actually playing can lead; keep the pick if it survives.
+    const picked = form.querySelector('input[name="lead"]:checked')?.value || "";
+    const keep = instruments.some(([id]) => id === picked) ? picked : "";
+    leads.replaceChildren(...[["", "맡기기"], ...instruments].map(([id, name]) => {
+      const label = document.createElement("label");
+      label.className = "chip-check";
+      const input = Object.assign(document.createElement("input"), { type: "radio", name: "lead", value: id, checked: id === keep });
+      const chip = Object.assign(document.createElement("span"), { className: "chip", textContent: name });
+      label.append(input, chip);
+      return label;
+    }));
   };
   for (const radio of form.querySelectorAll('input[name="style"], input[name="size"]')) {
     radio.addEventListener("change", showOrchestra);
@@ -54,6 +69,7 @@ function simplePayload(data) {
     mode,
     style: data.get("style"),
     size: data.get("size"),
+    lead: data.get("lead") || "",
     moods: data.getAll("moods"),
     speed: data.get("speed"),
     length: data.get("bars"),
@@ -86,8 +102,17 @@ function setUpDetailed() {
       markPreset();
     });
   }
-  for (const input of counts) input.addEventListener("input", markPreset);
+  // An instrument with nobody playing it cannot lead.
+  const lead = form.elements.lead;
+  const markLead = () => {
+    const now = players();
+    for (const option of lead.options) option.disabled = Boolean(option.value) && !now[option.value];
+    if (lead.selectedOptions[0]?.disabled) lead.value = "";
+  };
+  for (const preset of presets) preset.addEventListener("click", markLead);
+  for (const input of counts) input.addEventListener("input", () => { markPreset(); markLead(); });
   markPreset();
+  markLead();
 
   // The tempo word follows the number: 80 -> Andante.
   const bpm = form.elements.bpm;
@@ -129,6 +154,7 @@ function detailedPayload(data) {
     key: data.get("key"),
     time: data.get("time"),
     structure: data.get("structure"),
+    lead: data.get("lead"),
     style: data.get("style"),
     mood: (data.get("mood") || "").trim(),
     extra: (data.get("extra") || "").trim(),
@@ -234,14 +260,34 @@ playButton.addEventListener("click", () => {
   });
 });
 
+/** One section of GPT's plan: where it is, what it is for, and what is new in it. */
+function flowItem(section) {
+  const item = document.createElement("li");
+  item.classList.toggle("solo", section.solo);
+  const head = Object.assign(document.createElement("div"), { className: "flow-head" });
+  const facts = [
+    `${section.from}–${section.to}마디`, section.role, section.melody && `선율 ${section.melody}`,
+    section.texture, section.accompaniment, section.dynamic,
+  ].filter(Boolean).join(" · ");
+  head.append(
+    Object.assign(document.createElement("b"), { textContent: section.name }),
+    Object.assign(document.createElement("span"), { textContent: facts }),
+  );
+  item.append(head, Object.assign(document.createElement("p"), { textContent: section.idea }));
+  return item;
+}
+
 async function render(score) {
   player?.stop();
   current = score;
   document.getElementById("score-title").textContent = score.title;
   document.getElementById("score-meta").textContent = [
-    score.key, score.time, score.tempo, `${score.measures}마디`, "Score in C",
+    score.key, score.time, score.tempo, `${score.measures}마디`, `주인공 ${score.lead}`, "Score in C",
   ].join(" · ");
   document.getElementById("score-desc").textContent = score.description;
+  document.getElementById("score-flow").replaceChildren(...score.flow.map(flowItem));
+  document.getElementById("score-repetition").textContent =
+    `반복도: 앞 마디와 똑같은 마디 ${score.repetition.exact}% · 리듬이 같은 마디 ${score.repetition.rhythm}%`;
 
   const repairs = document.getElementById("score-repairs");
   repairs.textContent = `GPT 가 쓴 악보에서 ${score.repairs}군데를 자동으로 고쳤습니다 (박자 합, 음역, 붙임줄 등).`;

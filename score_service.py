@@ -5,11 +5,17 @@ JSON schema built per request: the instrument list is an enum of exactly what
 was picked, and the key is an enum trimmed to the difficulty (a beginner piece
 cannot come back in six flats). What the schema can't express — that every
 measure adds up, that notes stay in range — musicxml.py checks and repairs.
+
+The order of the schema is the order GPT thinks in. It names a lead instrument
+and outlines every section before it writes a note, then writes the music one
+section at a time with all the instruments together. Asked for thirty-two bars
+part by part with no plan, it wrote four bars eight times.
 """
 
 import json
 import logging
 import os
+import random
 import time
 
 import openai
@@ -46,13 +52,28 @@ every part is written at concert (sounding) pitch, including clarinet, horn,
 trumpet, piccolo and contrabass.
 
 ## Output
-Reply with JSON matching the schema.
+Reply with JSON matching the schema. Its order is the order to work in: the plan
+first, the notes after.
 - title: a short, evocative title in Korean.
-- description: two or three sentences in Korean on the form of the piece and how
-  the orchestra is used. Plain prose, no note names.
+- description: two or three sentences in Korean on the story the piece tells and
+  how the orchestra is used. Plain prose, no note names.
 - key, time_signature: choose from the allowed values.
-- parts: one entry per requested instrument, each with exactly the requested
-  number of measures.
+- lead: the instrument the piece is told through, its protagonist.
+- outline: the plan for the whole piece, settled before any notes. One entry per
+  section, in order:
+  - name: A, B, A', C, Coda... Material that returns takes a prime.
+  - role: intro, theme, contrast, development, solo, climax, return or coda.
+  - bars: how many measures it lasts.
+  - melody: the instrument carrying the main line in this section.
+  - texture: solo (the lead alone, or over the barest support), thin, medium or full.
+  - accompaniment: what the instruments under the melody do here: sustained
+    (held chords), arpeggio (broken chords), repeated (pulsing repeated notes),
+    offbeat (chords off the beat), pedal (one held or reiterated bass note under
+    changing harmony), countermelody (a second tune against the first) or none.
+  - dynamic: the overall level.
+  - idea: one sentence in Korean on what happens here that has not happened before.
+- sections: the music, one entry per outline entry, in the same order. Each
+  holds one part per requested instrument.
 
 ## Measure notation
 Each measure is one string of space-separated tokens in time order.
@@ -82,15 +103,49 @@ Example measures in 4/4:
    note, 3/4 = 2., 2/4 = 2, 6/8 = 2. (six eighths). Count every measure.
 2. Stay inside each part's range and never exceed its number of simultaneous notes.
 3. No tuplets, grace notes, or anything else not described above.
-4. Every part has exactly the requested number of measures. A part with nothing
-   to play in a measure writes R.
+4. The bars in the outline add up to exactly the requested length. Every
+   instrument appears in every section with exactly that section's number of
+   measures; a part with nothing to play in a measure writes R.
 5. Give every part a dynamic at its first entrance and wherever the level changes.
+
+## Tell a story; do not loop
+The commonest failure is four pleasant bars played again and again. Length has to
+be earned by things changing.
+- The lead is the protagonist. It states the theme, and whenever the theme comes
+  back it has changed: ornamented, extended, cut short, moved to another register,
+  set over new harmony. Write it like someone speaking with feeling: phrases of
+  different lengths, a held note where the line needs to breathe, a leap where it
+  reaches for something.
+- In a piece of 16 measures or more, give the lead a solo passage. The others
+  fall silent or thin to the barest support (a held note, a few soft chords) and
+  the lead plays freely and expressively. Where it goes is your call: put it
+  where the story wants it. Its outline entry has role solo and texture solo.
+- Pass the melody around. Other instruments take it over, answer it, or set a
+  countermelody against it; then the lead takes it back.
+- Nothing returns unchanged. No section copies an earlier one. When material
+  returns, change at least two of: who plays it, register, accompaniment figure,
+  harmony, rhythm, dynamics, an added countermelody.
+- Within a part, never write the same measure more than twice running.
+- The accompaniment changes with the section. Neighbouring sections never share
+  an accompaniment type, and the notes really are the type the outline names:
+  if it says sustained, nobody is playing running eighth notes underneath.
+- Vary the rhythm as well as the notes. A part that keeps one rhythm bar after
+  bar sounds like a loop even when the pitches change, and that goes for the
+  melody too: use long notes, dotted figures, runs, rests on the beat and notes
+  tied across it, as far as the difficulty allows.
+- Do not cycle one chord progression all the way through. The contrasting
+  section goes somewhere else harmonically; write the accidentals, the key
+  signature stays.
+- Shape one arc with a single climax, reached with more instruments, higher
+  register and more volume. The whole orchestra at its loudest happens once. The
+  request says where the climax and the solo fall; lay the sections out to fit
+  it rather than reaching for the same layout every time.
 
 ## Musical guidance
 - The whole orchestra shares one harmony, measure by measure. Settle the chord
   progression first, then voice it across the parts. Doubling a line in octaves
   is fine; notes that clash with the harmony by accident are not.
-- Write clear four-bar phrases around a real melody, and end on a cadence in the key.
+- End on a cadence in the key.
 - Orchestrate idiomatically: strings carry the foundation, woodwinds color and
   answer, brass reinforce the climaxes, timpani mark tonic and dominant. Not
   everyone plays all the time.
@@ -114,10 +169,12 @@ def _brief(request):
         beat = f"quarter = {tempo.bpm}"
     else:
         beat = f"quarter = {tempo.bpm} (if you choose 6/8, dotted quarter = {dotted})"
+    fewest, most = orchestra.sections_for(request.length)
+    sections = f"{fewest} to {most}" if fewest != most else str(fewest)
     lines = [
         "Write an original piece to these specifications.",
         "",
-        f"Length: exactly {request.length} measures.",
+        f"Length: exactly {request.length} measures, planned in {sections} sections.",
         f"Tempo: {tempo.term}, {beat}.",
         f"Difficulty: {request.difficulty.prompt}",
     ]
@@ -125,12 +182,18 @@ def _brief(request):
         lines.append(f"Key: {request.key}, chosen by the user.")
     if request.time:
         lines.append(f"Time signature: {request.time}, chosen by the user.")
+    if request.lead:
+        lines.append(f"Lead instrument: {request.lead.id}, chosen by the user.")
+    else:
+        lines.append("Lead instrument: your choice, whichever suits this piece best.")
     if request.style:
         lines.append(f"Style: {request.style.prompt}")
     if request.ensemble:
         lines.append(f"Ensemble: {request.ensemble}")
     if request.form.prompt:
         lines.append(f"Form: {request.form.prompt}")
+    elif request.length >= orchestra.SOLO_FROM:
+        lines.append(f"Narrative shape: {random.choice(orchestra.SHAPES)}")
     if request.mood:
         lines.append(f"Mood, in the user's words: {request.mood}")
     if request.extra:
@@ -153,32 +216,44 @@ def _schema(request):
     # A choice the user made becomes a one-value enum, so GPT cannot overrule it.
     keys = [request.key] if request.key else orchestra.keys_for(request.difficulty.id)
     times = [request.time] if request.time else orchestra.TIME_SIGNATURES
-    return {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string"},
-            "description": {"type": "string"},
-            "key": {"type": "string", "enum": keys},
-            "time_signature": {"type": "string", "enum": times},
-            "parts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "instrument": {
-                            "type": "string",
-                            "enum": [part.instrument.id for part in request.parts],
-                        },
-                        "measures": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": ["instrument", "measures"],
-                    "additionalProperties": False,
-                },
-            },
+    instruments = [part.instrument.id for part in request.parts]
+    leads = [request.lead.id] if request.lead else [i.id for i in orchestra.can_lead(request.parts)]
+
+    def record(properties):
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+
+    text = {"type": "string"}
+    part = record({
+        "instrument": {"type": "string", "enum": instruments},
+        "measures": {"type": "array", "items": text},
+    })
+    section = record({
+        "name": text,
+        "role": {"type": "string", "enum": list(orchestra.ROLES)},
+        "bars": {"type": "integer"},
+        "melody": {"type": "string", "enum": instruments},
+        "texture": {"type": "string", "enum": list(orchestra.TEXTURES)},
+        "accompaniment": {"type": "string", "enum": list(orchestra.ACCOMPANIMENTS)},
+        "dynamic": {"type": "string", "enum": ["pp", "p", "mp", "mf", "f", "ff"]},
+        "idea": text,
+    })
+    return record({
+        "title": text,
+        "description": text,
+        "key": {"type": "string", "enum": keys},
+        "time_signature": {"type": "string", "enum": times},
+        "lead": {"type": "string", "enum": leads},
+        "outline": {"type": "array", "items": section},
+        "sections": {
+            "type": "array",
+            "items": record({"name": text, "parts": {"type": "array", "items": part}}),
         },
-        "required": ["title", "description", "key", "time_signature", "parts"],
-        "additionalProperties": False,
-    }
+    })
 
 
 def _call(request):
@@ -251,10 +326,12 @@ def generate(request):
     # One line per score, so cost and quality can be read off the server log.
     usage = response.usage
     reasoning = getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0)
+    repetition = score["repetition"]
     log.info(
-        "score: %s, %s mode, %d parts x %d bars, %.0fs, tokens in %d / out %d (reasoning %d), %d repairs",
+        "score: %s, %s mode, %d parts x %d bars, %.0fs, tokens in %d / out %d (reasoning %d), "
+        "%d repairs, repetition exact %d%% / rhythm %d%% / %d looped bars",
         response.model, request.mode, len(request.parts), request.length,
         time.monotonic() - started, usage.input_tokens, usage.output_tokens, reasoning or 0,
-        score["repairs"],
+        score["repairs"], repetition["exact"], repetition["rhythm"], repetition["loops"],
     )
     return score
