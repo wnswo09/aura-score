@@ -1,0 +1,10 @@
+# Firebase service account key — NEVER commit this.
+# It grants full admin access to the whole Firebase project.
+*serviceAccountKey*.json
+*-firebase-adminsdk-*.json
+
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

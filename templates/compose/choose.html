@@ -1,0 +1,18 @@
+<div class="card">
+  <h2>어떻게 만들까요?</h2>
+  <p class="auth-lead">정하고 싶은 만큼 고르세요. 입력하다가 언제든 다른 방식으로 바꿀 수 있습니다.</p>
+  <div class="modes">
+    <a class="mode" href="{{ url_for('new_score', mode='simple') }}">
+      <span class="mode-mark">♪</span>
+      <b>간단하게</b>
+      <p>작곡가 스타일, 분위기, 빠르기, 길이만 버튼으로 고르면 편성은 스타일에 맞춰 짜 드립니다.</p>
+      <small>오케스트라를 잘 몰라도 괜찮아요</small>
+    </a>
+    <a class="mode" href="{{ url_for('new_score', mode='detailed') }}">
+      <span class="mode-mark">𝄢</span>
+      <b>자세하게</b>
+      <p>악기별 인원과 현악 규모, 조성과 박자, 템포, 마디 수, 곡 형식까지 직접 정합니다.</p>
+      <small>편성을 직접 짜고 싶다면</small>
+    </a>
+  </div>
+</div>

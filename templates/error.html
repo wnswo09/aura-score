@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — Aura Score{% endblock %}
+{% block content %}
+<div class="empty card">
+  <p class="empty-title">{{ code }}</p>
+  <p>{{ message }}</p>
+  <p><a class="more" href="{{ url_for('index') }}">← 홈으로 돌아가기</a></p>
+</div>
+{% endblock %}

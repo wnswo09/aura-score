@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}로그인 — Aura Score{% endblock %}
+
+{% block content %}
+<div class="card auth-card">
+  <h2>로그인</h2>
+  <p class="auth-lead">Music Aura 계정이 있다면 같은 이메일과 비밀번호로 로그인할 수 있습니다.</p>
+
+  <form id="auth-form" novalidate>
+    <div class="field">
+      <label for="email">이메일</label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+    </div>
+    <div class="field">
+      <label for="password">비밀번호</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+
+    <p class="form-error" id="auth-error" hidden></p>
+    <button class="btn primary block" id="auth-submit" type="submit"
+            {% if not firebase_ready %}disabled{% endif %}>로그인</button>
+    {% if not firebase_ready %}
+    <p class="hint center">Firebase 웹 설정이 없어 지금은 로그인할 수 없습니다.</p>
+    {% endif %}
+  </form>
+
+  <p class="auth-foot">아직 계정이 없나요? <a href="{{ url_for('signup') }}">회원가입</a></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if firebase_ready %}
+<script type="application/json" id="firebase-config">{{ firebase_config | tojson }}</script>
+<script type="module">
+  import { signIn, explain } from "{{ url_for('static', filename='js/auth.js') }}";
+
+  const form = document.getElementById("auth-form");
+  const button = document.getElementById("auth-submit");
+  const error = document.getElementById("auth-error");
+  const next = new URLSearchParams(window.location.search).get("next");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    button.disabled = true;
+    button.textContent = "로그인 중…";
+    try {
+      await signIn(form.email.value.trim(), form.password.value);
+      // Only same-site paths, so a crafted ?next= cannot bounce anyone off-site.
+      window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "{{ url_for('index') }}";
+    } catch (failure) {
+      error.textContent = explain(failure);
+      error.hidden = false;
+      button.disabled = false;
+      button.textContent = "로그인";
+    }
+  });
+</script>
+{% endif %}
+{% endblock %}

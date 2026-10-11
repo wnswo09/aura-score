@@ -1,0 +1,68 @@
+<section class="group">
+  <h3>작곡가 스타일</h3>
+  <div class="options">
+    {% for style in orchestra.STYLES %}
+    <label class="option">
+      <input type="radio" name="style" value="{{ style.id }}">
+      <span><b>{{ style.label }}</b><small>{{ style.hint }}</small></span>
+    </label>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="group">
+  <h3>규모</h3>
+  <div class="options">
+    {% for choice in orchestra.SIMPLE_SIZES %}
+    <label class="option">
+      <input type="radio" name="size" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_SIMPLE_SIZE %}checked{% endif %}>
+      <span><b>{{ choice.label }}</b><small>{{ choice.hint }}</small></span>
+    </label>
+    {% endfor %}
+  </div>
+  <p class="hint" id="style-orchestra">스타일을 고르면 어떤 편성으로 쓰는지 여기에 보여 드립니다.</p>
+  <script type="application/json" id="orchestras">{{ orchestra.simple_summaries() | tojson }}</script>
+</section>
+
+<section class="group">
+  <h3>분위기 <span class="optional">(최대 {{ orchestra.SIMPLE_MOODS_MAX }}개)</span></h3>
+  <div class="chips" data-max="{{ orchestra.SIMPLE_MOODS_MAX }}">
+    {% for mood in orchestra.MOODS %}
+    <label class="chip-check">
+      <input type="checkbox" name="moods" value="{{ mood }}">
+      <span class="chip">{{ mood }}</span>
+    </label>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="group two">
+  <div>
+    <h3>빠르기</h3>
+    <div class="options">
+      {% for choice in orchestra.SPEEDS %}
+      <label class="option">
+        <input type="radio" name="speed" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_SPEED %}checked{% endif %}>
+        <span><b>{{ choice.label }}</b><small>{{ choice.hint }}</small></span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  <div>
+    <h3>길이</h3>
+    <div class="options">
+      {% for choice in orchestra.LENGTHS %}
+      <label class="option">
+        <input type="radio" name="bars" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_LENGTH %}checked{% endif %}>
+        <span><b>{{ choice.label }}</b><small>{{ choice.hint }}</small></span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="group">
+  <h3><label for="extra">더 하고 싶은 말 <span class="optional">(선택)</span></label></h3>
+  <input id="extra" name="extra" maxlength="{{ orchestra.SIMPLE_EXTRA_MAX }}" autocomplete="off"
+         placeholder="예: 비 오는 날 창밖을 보는 느낌으로">
+</section>

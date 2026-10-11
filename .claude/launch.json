@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aura score",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "app.py"
+      ],
+      "port": 5002,
+      "autoPort": true
+    }
+  ]
+}

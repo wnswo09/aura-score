@@ -1,0 +1,98 @@
+<section class="group">
+  <h3>편성 <span class="optional">— 버튼으로 채운 뒤 숫자를 고치세요. 0은 빼기입니다.</span></h3>
+  <div class="chips">
+    {% for id, label, counts in orchestra.PRESETS %}
+    <button type="button" class="chip preset" data-counts="{{ counts | tojson | forceescape }}">{{ label }}</button>
+    {% endfor %}
+  </div>
+  <div class="sections">
+    {% for section, section_label in orchestra.SECTIONS %}
+    <fieldset class="section">
+      <legend>{{ section_label }}{{ ' · 파트 인원' if section == 'strings' else ' · 연주자 수' }}</legend>
+      {% for instrument in orchestra.INSTRUMENTS if instrument.section == section %}
+      <label class="count">
+        <span>{{ instrument.ko }}</span>
+        <input type="number" name="{{ instrument.id }}" data-players inputmode="numeric"
+               min="0" max="{{ instrument.max_players }}"
+               value="{{ orchestra.DEFAULT_COUNTS.get(instrument.id, 0) }}">
+      </label>
+      {% endfor %}
+    </fieldset>
+    {% endfor %}
+  </div>
+  <p class="hint">
+    관악기는 한 줄을 나눠 쓰는 연주자 수입니다 (플루트 2 → “Flute 1·2”, 두 음까지 동시에).
+    현악기는 파트 인원이라 몇 명이든 악보는 한 줄이고, 1명이면 솔로,
+    {{ orchestra.DIVISI_A3 }}명 이상이면 세 갈래 divisi 까지 씁니다.
+  </p>
+</section>
+
+<section class="group">
+  <h3>곡의 틀</h3>
+  <div class="fields">
+    <label class="field">
+      <span>조성</span>
+      <select name="key">
+        <option value="">GPT 에게 맡기기</option>
+        {% for label, _fifths, _mode in orchestra.KEYS %}<option>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>박자</span>
+      <select name="time">
+        <option value="">GPT 에게 맡기기</option>
+        {% for time in orchestra.TIME_SIGNATURES %}<option>{{ time }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>곡 형식</span>
+      <select name="structure">
+        {% for choice in orchestra.FORMS %}<option value="{{ choice.id }}">{{ choice.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>템포 (♩ BPM) <em id="tempo-term"></em></span>
+      <input type="number" name="bpm" inputmode="numeric" data-terms="{{ orchestra.TEMPO_TERMS | tojson | forceescape }}"
+             min="{{ orchestra.BPM_MIN }}" max="{{ orchestra.BPM_MAX }}" value="{{ orchestra.BPM_DEFAULT }}">
+    </label>
+    <label class="field">
+      <span>마디 수 ({{ orchestra.BARS_MIN }}~{{ orchestra.BARS_MAX }})</span>
+      <input type="number" name="bars" inputmode="numeric"
+             min="{{ orchestra.BARS_MIN }}" max="{{ orchestra.BARS_MAX }}" value="{{ orchestra.BARS_DEFAULT }}">
+    </label>
+    <label class="field">
+      <span>스타일 <span class="optional">(선택)</span></span>
+      <select name="style">
+        <option value="">없음</option>
+        {% for style in orchestra.STYLES %}<option value="{{ style.id }}">{{ style.label }} · {{ style.hint }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+</section>
+
+<section class="group">
+  <h3>연주 난이도</h3>
+  <div class="options">
+    {% for choice in orchestra.DIFFICULTIES %}
+    <label class="option">
+      <input type="radio" name="difficulty" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_DIFFICULTY %}checked{% endif %}>
+      <span><b>{{ choice.label }}</b><small>{{ choice.hint }}</small></span>
+    </label>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="group two">
+  <div>
+    <h3><label for="mood">분위기 <span class="optional">(선택)</span></label></h3>
+    <input id="mood" name="mood" maxlength="{{ orchestra.MOOD_MAX }}" placeholder="예: 새벽 안개가 걷히는 듯한" autocomplete="off">
+    <div class="chips below">
+      {% for mood in orchestra.MOODS %}<button type="button" class="chip mood">{{ mood }}</button>{% endfor %}
+    </div>
+  </div>
+  <div>
+    <h3><label for="extra">추가사항 <span class="optional">(선택)</span></label></h3>
+    <textarea id="extra" name="extra" rows="4" maxlength="{{ orchestra.EXTRA_MAX }}"
+              placeholder="예: 첼로가 주선율을 맡고, 마지막 네 마디는 점점 커지며 끝나게"></textarea>
+  </div>
+</section>

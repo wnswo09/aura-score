@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}악보 만들기 — Aura Score{% endblock %}
+{% block wrap_class %}wide{% endblock %}
+
+{% block content %}
+{% if not mode %}
+  {% include "compose/choose.html" %}
+{% else %}
+<form id="score-form" class="card compose" data-mode="{{ mode }}" novalidate>
+  <div class="compose-head">
+    <h2>악보 만들기 · {{ '간단하게' if mode == 'simple' else '자세하게' }}</h2>
+    {% if mode == 'simple' %}
+    <a class="switch" href="{{ url_for('new_score', mode='detailed') }}">자세하게 입력하기 →</a>
+    {% else %}
+    <a class="switch" href="{{ url_for('new_score', mode='simple') }}">간단하게 입력하기 →</a>
+    {% endif %}
+  </div>
+
+  {% include ("compose/simple.html" if mode == "simple" else "compose/detailed.html") %}
+
+  <p class="form-error" id="form-error" hidden></p>
+  <p class="gen-status" id="gen-status" hidden></p>
+  <button class="btn primary block" id="generate" type="submit">악보 만들기</button>
+  <p class="hint center">GPT 가 곡을 쓰는 데 1~3분쯤 걸립니다.</p>
+</form>
+
+{% include "compose/result.html" %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if mode %}
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@2.1.3/build/opensheetmusicdisplay.min.js"></script>
+<script type="module" src="{{ url_for('static', filename='js/compose.js') }}"></script>
+{% endif %}
+{% endblock %}
