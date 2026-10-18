@@ -19,6 +19,7 @@
       <a class="nav-link {{ 'on' if active_nav == 'home' }}" href="{{ url_for('index') }}">홈</a>
       {% if user %}
         <a class="nav-link {{ 'on' if active_nav == 'new' }}" href="{{ url_for('new_score') }}">악보 만들기</a>
+        <a class="nav-link {{ 'on' if active_nav == 'library' }}" href="{{ url_for('my_scores') }}">내 악보</a>
         <span class="who" title="{{ user.email }}">{{ user.name }}</span>
         <form class="inline" method="post" action="{{ url_for('logout') }}">
           <button class="nav-link as-button" type="submit">로그아웃</button>

@@ -137,9 +137,11 @@ def _write(request, plan, index):
 
 
 def generate(request, progress=lambda text: None):
-    """Request -> the page's score payload (see musicxml.build).
+    """Request -> (the page's score payload, the plan it was built from).
 
-    `progress` is called with a sentence for the person waiting, at each stage.
+    The plan carries every chapter's music, so it is everything needed to build
+    the score again (see library.py). `progress` is called with a sentence for
+    the person waiting, at each stage.
     """
     if not os.environ.get("OPENAI_API_KEY"):
         raise ScoreServiceError("OPENAI_API_KEY 가 없어 악보를 만들 수 없습니다. .env 를 채워 주세요.")
@@ -187,4 +189,4 @@ def generate(request, progress=lambda text: None):
         request.minutes * 60, planned, time.monotonic() - started - planned, tokens_in, tokens_out,
         score["repairs"], repetition["exact"], repetition["rhythm"], repetition["loops"],
     )
-    return score
+    return score, plan

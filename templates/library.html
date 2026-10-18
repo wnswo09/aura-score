@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}내 악보 — Aura Score{% endblock %}
+
+{% block content %}
+<div class="library-head">
+  <h2>내 악보</h2>
+  <a class="btn primary" href="{{ url_for('new_score') }}">새 악보 만들기</a>
+</div>
+
+{% if load_error %}
+<p class="form-error">{{ load_error }}</p>
+{% endif %}
+
+{% if scores %}
+<ul class="library">
+  {% for score in scores %}
+  <li>
+    <a class="card library-item" href="{{ url_for('saved_score', score_id=score.id) }}">
+      <b>{{ score.title }}</b>
+      <span class="meta">
+        {{ score.created }} · {{ score.duration | clock }} · {{ score.chapters }}장 · {{ score.measures }}마디 · {{ score.key }}
+      </span>
+      {% if score.summary %}<span class="library-summary">{{ score.summary }} · 주인공 {{ score.lead }}</span>{% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% elif not load_error %}
+<div class="card empty">
+  <p class="empty-title">아직 저장된 악보가 없습니다</p>
+  <p>악보를 만들면 끝나는 대로 여기에 저장됩니다.</p>
+  <p><a class="more" href="{{ url_for('new_score') }}">악보 만들기 →</a></p>
+</div>
+{% endif %}
+{% endblock %}

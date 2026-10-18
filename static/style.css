@@ -183,6 +183,34 @@ textarea { resize: vertical; line-height: 1.6; }
 .empty { text-align: center; color: var(--muted); font-size: 14px; line-height: 1.8; }
 .empty-title { color: var(--text); font-size: 16px; margin: 0 0 6px; }
 
+/* ---- My scores ---- */
+.library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.library-head h2 { margin: 0; font-size: 20px; }
+.library { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.library-item {
+  display: grid;
+  gap: 5px;
+  padding: 16px 20px;
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.15s;
+}
+.library-item:hover { border-color: var(--accent); }
+.library-item b { font-size: 16px; }
+.library-summary { font-size: 13px; color: #c3c7d2; }
+.back { font-size: 13px; text-decoration: none; }
+.back:hover { text-decoration: underline; }
+.delete-form { margin: 18px 0 0; display: flex; justify-content: flex-end; }
+.btn.danger { background: #3a2528; color: var(--danger); }
+.btn.danger:hover { background: #4b2e32; }
+
 /* ---- Home ---- */
 .hero h2 { font-size: 21px; margin-bottom: 12px; letter-spacing: -0.3px; }
 .hero-lead { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.8; }

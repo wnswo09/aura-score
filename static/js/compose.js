@@ -1,20 +1,18 @@
-/* The compose page: either form, the wait while GPT writes, and drawing the score.
+/* The compose page: either form, and the wait while GPT writes.
  *
  * The page renders one of two forms, marked by data-mode. Each gathers its own
- * payload; the server turns both into the same request. What comes back is
- * finished MusicXML, which this file renders with OpenSheetMusicDisplay (loaded
- * as a global by the page) and offers as a download, plus a note timeline that
- * player.js plays.
+ * payload; the server turns both into the same request and writes the piece as
+ * a background job. The finished score is shown by score_view.js, the same code
+ * that shows a saved piece.
  */
 
-import { Player } from "./player.js";
+import { clock, showScore } from "./score_view.js";
 
 const form = document.getElementById("score-form");
 const mode = form.dataset.mode;
 const error = document.getElementById("form-error");
 const status = document.getElementById("gen-status");
 const button = document.getElementById("generate");
-const result = document.getElementById("result");
 
 function fail(message) {
   error.textContent = message;
@@ -201,10 +199,6 @@ function say(state, text) {
   status.hidden = false;
 }
 
-function clock(seconds) {
-  return seconds < 60 ? `${seconds}초` : `${Math.floor(seconds / 60)}분 ${seconds % 60}초`;
-}
-
 function busy(on) {
   button.disabled = on;
   button.textContent = on ? "악보를 쓰는 중…" : "악보 만들기";
@@ -225,8 +219,16 @@ async function wait(job, quiet = false) {
       }
       if (!response.ok) throw new Error(report.error || `서버 오류가 났습니다 (${response.status}).`);
       if (report.state === "done") {
-        say("good", `완성했습니다 · ${clock(report.elapsed)} 걸렸습니다`);
-        await render(report.score);
+        const score = report.score;
+        say("good", `완성했습니다 · ${clock(report.elapsed)} 걸렸습니다 · `);
+        if (score.id) {
+          status.append(Object.assign(document.createElement("a"), {
+            href: `/scores/${score.id}`, textContent: "내 악보에 저장했습니다",
+          }));
+        } else {
+          status.append(`저장하지 못했습니다: ${score.save_error || "알 수 없는 이유"}`);
+        }
+        await showScore(score);
         return;
       }
       if (report.state === "failed") throw new Error(report.error);
@@ -268,124 +270,6 @@ form.addEventListener("submit", async (event) => {
     fail(failure instanceof TypeError ? "서버에 연결하지 못했습니다." : failure.message);
     busy(false);
   }
-});
-
-// ---------------------------------------------------------------- score
-
-let osmd = null;
-let player = null;
-let current = null;
-
-const playButton = document.getElementById("play");
-const playError = document.getElementById("play-error");
-
-function showPlayer(state, { loaded, total } = {}) {
-  playButton.textContent = {
-    idle: "▶ 재생",
-    loading: `소리 불러오는 중… ${loaded}/${total}`,
-    playing: "■ 정지",
-  }[state];
-}
-
-playButton.addEventListener("click", () => {
-  if (!player || !current) return;
-  playError.hidden = true;
-  if (player.state !== "idle") return player.stop();
-  player.play(current.playback).catch((failure) => {
-    playError.textContent = failure.message;
-    playError.hidden = false;
-  });
-});
-
-/** One section of GPT's plan: where it is, what it is for, and what is new in it.
- * The badge is the rehearsal letter printed in the score. */
-function flowItem(section) {
-  const item = document.createElement("li");
-  item.classList.toggle("solo", section.solo);
-  const head = Object.assign(document.createElement("div"), { className: "flow-head" });
-  const facts = [
-    `${section.from}–${section.to}마디`, section.role, section.melody && `선율 ${section.melody}`,
-    section.texture, section.accompaniment, section.dynamic,
-  ].filter(Boolean).join(" · ");
-  head.append(
-    Object.assign(document.createElement("b"), { textContent: section.mark }),
-    Object.assign(document.createElement("span"), { textContent: facts }),
-  );
-  item.append(head, Object.assign(document.createElement("p"), { textContent: section.idea }));
-  return item;
-}
-
-const NUMERALS = "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ";
-
-/** A chapter: its title, tempo, key and length, what it is for, and its sections. */
-function chapterBlock(chapter) {
-  const block = Object.assign(document.createElement("section"), { className: "chapter" });
-  const head = Object.assign(document.createElement("div"), { className: "chapter-head" });
-  head.append(
-    Object.assign(document.createElement("h3"), {
-      textContent: `${NUMERALS[(chapter.number - 1) % NUMERALS.length]}. ${chapter.title}`,
-    }),
-    Object.assign(document.createElement("span"), {
-      textContent: [chapter.tempo, chapter.key, `${chapter.from}–${chapter.to}마디`, clock(chapter.seconds)].join(" · "),
-    }),
-  );
-  const sections = Object.assign(document.createElement("ol"), { className: "flow" });
-  sections.replaceChildren(...chapter.sections.map(flowItem));
-  block.append(head, Object.assign(document.createElement("p"), { className: "chapter-purpose", textContent: chapter.purpose }), sections);
-  return block;
-}
-
-async function render(score) {
-  player?.stop();
-  current = score;
-  document.getElementById("score-title").textContent = score.title;
-  document.getElementById("score-meta").textContent = [
-    clock(score.duration), `${score.chapters.length}장`, `${score.measures}마디`, score.key, score.time,
-    `주인공 ${score.lead}`, score.ending, "Score in C",
-  ].join(" · ");
-  document.getElementById("score-desc").textContent = score.description;
-  document.getElementById("score-flow").replaceChildren(...score.chapters.map(chapterBlock));
-  document.getElementById("score-repetition").textContent =
-    `반복도: 앞 마디와 똑같은 마디 ${score.repetition.exact}% · 리듬이 같은 마디 ${score.repetition.rhythm}%`;
-
-  const repairs = document.getElementById("score-repairs");
-  repairs.textContent = `GPT 가 쓴 악보에서 ${score.repairs}군데를 자동으로 고쳤습니다 (박자 합, 음역, 붙임줄 등).`;
-  repairs.hidden = !score.repairs;
-
-  // Visible before drawing: OSMD lays the score out to the container's width.
-  result.hidden = false;
-  if (!osmd) {
-    osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(document.getElementById("score"), {
-      autoResize: true,
-      backend: "svg",
-      autoBeam: true,
-      drawTitle: true,
-      drawPartNames: true,
-      drawPartAbbreviations: true,
-      // The playback cursor, in the page's violet; follow scrolls it into view.
-      cursorsOptions: [{ type: 0, color: "#b98cff", alpha: 0.35, follow: true }],
-    });
-    // A full score stacks a dozen staves; at 1.0 only three bars fit on a line.
-    osmd.zoom = 0.75;
-    player = new Player(osmd, showPlayer);
-  }
-  try {
-    await osmd.load(score.musicxml);
-    osmd.render();
-  } catch (failure) {
-    throw new Error(`악보를 그리지 못했습니다: ${failure.message}. MusicXML 다운로드는 가능합니다.`);
-  }
-  result.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-document.getElementById("download").addEventListener("click", () => {
-  if (!current) return;
-  const blob = new Blob([current.musicxml], { type: "application/vnd.recordare.musicxml+xml" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `${current.title.replace(/[\\/:*?"<>|]/g, "").trim() || "score"}.musicxml`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 });
 
 // A job started earlier in this tab, still running or already done.

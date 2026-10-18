@@ -6,6 +6,7 @@
 - **악보 표시**: OpenSheetMusicDisplay 2.1.3, MusicXML 다운로드
 - **재생**: smplr 1.0 + General MIDI 사운드폰트(MusyngKite), 악보 위 커서가 따라감
 - **로그인**: Firebase Authentication, 이메일/비밀번호
+- **내 악보**: 만든 곡은 끝나는 대로 Firestore 에 저장되고, 다시 열어 보고 재생하고 지울 수 있습니다
 
 ## 화면
 
@@ -16,6 +17,9 @@
 | `/scores/new` | 입력 방식 고르기 → `?mode=simple` 또는 `?mode=detailed` 폼과 결과 악보 | **필요** |
 | `POST /api/scores` | 생성 작업 시작 → 작업 id (곧바로 답함) | **필요** |
 | `GET /api/scores/<id>` | 작업 진행 단계, 끝나면 악보 | **필요**, 시작한 사람만 |
+| `/scores` | 내 악보 — 저장된 곡 목록, 최신순 | **필요** |
+| `/scores/<id>` | 저장된 곡 하나: 설계, 악보, 재생, 다운로드, 삭제 | **필요**, 만든 사람만 |
+| `GET /api/library/<id>` | 저장된 곡을 다시 조립한 악보 | **필요**, 만든 사람만 |
 
 입력은 두 가지 방식이고, 서버에서는 같은 요청 하나(`orchestra.Request`)로 합쳐집니다.
 
@@ -159,6 +163,14 @@ GPT 한 번의 응답으로 쓰게 하면 앞에서 쓴 것을 다시 꺼내 씁
   정지하면 그 노드를 끊어 남은 예약이 소리 없이 지나가게 합니다.
 - 재생하면 커서를 따라 페이지가 내려가므로, 제목과 재생·정지 버튼은 화면 위에 붙어 있습니다.
 
+**내 악보.** 생성 작업은 끝나면 곡을 Firestore 에 저장합니다 (`library.py`,
+`score_libraries/{uid}/scores/{id}`). 저장하는 것은 MusicXML 이 아니라 GPT 가 쓴 원본(설계 + 장별 마디 문자열,
+zlib 압축)과 입력한 폼입니다. 5분짜리 곡의 MusicXML 은 472KB 로 Firestore 문서 한도(1MB)의 절반인데,
+원본은 압축하면 8KB 입니다. 곡을 열 때 `musicxml.build` 로 다시 조립하므로(5분짜리가 0.02초)
+악보 작성 코드를 고치면 예전 곡에도 반영됩니다. 사용자마다 컬렉션이 따로라 남의 곡에는 닿을 수 없고,
+목록은 단일 필드 정렬이라 복합 색인이 필요 없습니다. 목록 쿼리는 원본을 빼고 요약 필드만 읽습니다.
+저장에 실패해도 곡은 화면에 보여 주고, 저장하지 못한 이유를 알려 줍니다.
+
 **로그인.** 이메일/비밀번호 인증은 브라우저의 Firebase Web SDK 만 할 수 있습니다.
 브라우저는 ID 토큰을 받아 `/api/session` 에 넘긴 뒤 바로 로그아웃하고, 서버가 Admin SDK 로
 토큰을 한 번 검증해 Flask 세션 쿠키로 바꿉니다. 쿠키 이름은 `aura_score_session` 입니다.
@@ -172,16 +184,18 @@ app.py               라우트와 세션. login_required 가 여기 있습니다
 orchestra.py         악기 15종(음역·음자리표), 스타일·프리셋·난이도·형식·템포 선택지,
                      두 폼을 하나의 Request 로 바꾸는 검증. 폼, 프롬프트, 악보 작성이 모두 여기서 읽습니다.
 templates/compose/   방식 고르기(choose), 간단하게(simple), 자세하게(detailed), 결과(result).
+templates/library.html, score.html  내 악보 목록, 저장된 곡 하나.
 prompts.py           GPT 지시문(설계용, 장 작성용), 요청문, JSON 스키마.
 score_service.py     설계 호출 → 장 동시 작성 → 조립. OpenAI 호출과 오류 안내.
 jobs.py              생성 작업을 백그라운드에서 돌리고 진행 단계를 기억합니다.
+library.py           내 악보: Firestore 에 저장, 목록, 다시 조립해 열기, 삭제.
 musicxml.py          마디 문자열 파싱, 자동 수정, 장 조립(조표·템포 변화), MusicXML 작성, 재생 시간표.
-firebase_setup.py    Firebase 초기화, 토큰 검증, 남은 설정 안내.
+firebase_setup.py    Firebase 초기화, 토큰 검증, Firestore 클라이언트, 남은 설정 안내.
 static/js/auth.js    Firebase 이메일/비밀번호 인증 → Flask 세션 인계.
-static/js/compose.js 두 폼의 입력 처리, 생성 작업 시작과 진행 표시, 장별 설계 표시, 악보 렌더링, 다운로드.
+static/js/compose.js 두 폼의 입력 처리, 생성 작업 시작과 진행 표시.
+static/js/score_view.js 완성된 곡 보여 주기(장별 설계, 악보, 재생 버튼, 다운로드). 작곡 페이지와 저장된 곡 페이지가 같이 씁니다.
 static/js/player.js  사운드폰트 재생, 커서 동기화, 정지.
 ```
 
-아직 없는 것: 만든 악보 저장("내 악보" 목록 — 결과는 서버 메모리에 한 시간만 남습니다),
-하프·피아노처럼 두 단 악보를 쓰는 악기, 원하는 장부터 재생, 곡 도중의 박자 변화, 크레셴도 기호,
+아직 없는 것: 하프·피아노처럼 두 단 악보를 쓰는 악기, 원하는 장부터 재생, 곡 도중의 박자 변화, 크레셴도 기호,
 셋잇단음표와 피치카토.

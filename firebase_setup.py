@@ -1,9 +1,10 @@
-"""Firebase, for sign-in only.
+"""Firebase: sign-in, and the database the saved scores live in.
 
 Two halves of the same project are used here:
   - the Web SDK config handed to the browser, which is the only side that can
     run email/password sign-in;
-  - the Admin SDK on the server, which checks the ID token the browser hands over.
+  - the Admin SDK on the server, which checks the ID token the browser hands over
+    and reads and writes Firestore. The browser never touches Firestore.
 
 Everything is looked up lazily. The pages render with no credentials at all;
 only the moment of signing in insists.
@@ -15,7 +16,7 @@ import os
 
 import firebase_admin
 from firebase_admin import auth as admin_auth
-from firebase_admin import credentials
+from firebase_admin import credentials, firestore
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -23,6 +24,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CLOCK_SKEW_SECONDS = 10
 
 _app = None
+_db = None
 
 
 class FirebaseError(Exception):
@@ -102,6 +104,32 @@ def _ensure_app():
             # Already initialised elsewhere in this process (the reloader).
             _app = firebase_admin.get_app()
     return _app
+
+
+def db():
+    """The Firestore client, built on first use."""
+    global _db
+    if _db is None:
+        _ensure_app()
+        _db = firestore.client()
+    return _db
+
+
+def friendly(error):
+    """Turn a Firestore failure into one line a person can act on. The client
+    raises errors whose text is a page of metadata; the failures that actually
+    happen each deserve a single instruction."""
+    text = str(error)
+    if "has not been used in project" in text or "SERVICE_DISABLED" in text:
+        return FirebaseError(
+            "Firestore 데이터베이스가 아직 없습니다. Firebase Console > Firestore Database > "
+            "데이터베이스 만들기 를 먼저 해 주세요."
+        )
+    if "PERMISSION_DENIED" in text:
+        return FirebaseError(
+            "서비스 계정에 Firestore 권한이 없습니다. serviceAccountKey.json 이 이 프로젝트의 키가 맞는지 확인해 주세요."
+        )
+    return FirebaseError("Firestore 에 연결하지 못했습니다: " + text.strip().split("\n")[0][:200])
 
 
 def verify_id_token(id_token):
