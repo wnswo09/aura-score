@@ -6,6 +6,9 @@ for everything: how many players on each part, key, meter, tempo, form. Both
 end up as the same Request, so the prompt and the MusicXML writer only ever
 see one shape.
 
+Length is asked for in minutes and GPT plans the piece in chapters to fill it
+(see prompts.py).
+
 Pitches are MIDI numbers at concert pitch (middle C = 60). The score is written
 in C, so only the octave-transposing instruments are written anywhere other
 than where they sound.
@@ -342,8 +345,6 @@ ACCOMPANIMENTS = {
     "sustained": "긴 화음", "arpeggio": "펼침화음", "repeated": "같은 음 반복",
     "offbeat": "엇박", "pedal": "지속음", "countermelody": "대선율", "none": "반주 없음",
 }
-# From this length on, the lead instrument gets a solo passage.
-SOLO_FROM = 16
 # Where the solo and the climax fall. Given the same instructions every time, GPT
 # settles on one layout (theme, contrast, solo, climax, return, coda) for every
 # piece, so each request is handed one of these at random.
@@ -391,36 +392,31 @@ ENDING_BY_ID = {ending.id: ending for ending in ENDINGS}
 DEFAULT_ENDING = "slowing"
 
 
-def length_range(length):
-    """The requested length is a target: (fewest, most) measures GPT may use, so
-    it can give the ending the room it needs instead of stopping on a count."""
-    slack = max(2, length // 8)
-    return max(2, length - slack), length + slack
+def chapters_for(minutes):
+    """How many chapters a piece of this many minutes is planned in: (fewest, most).
+    About one a minute: long enough for a chapter to say something, short
+    enough that one call writes it well."""
+    fewest = max(1, round(minutes * 0.8))
+    return fewest, min(10, max(fewest + 1, round(minutes * 1.2)))
 
 
-def sections_for(length):
-    """How many sections a piece of this length should be planned in: (fewest, most)."""
-    for longest, span in [(8, (1, 2)), (15, (2, 3)), (23, (3, 4)), (32, (4, 6))]:
-        if length <= longest:
-            return span
-    return 6, 8
-
-# Simple form: three speeds, three lengths.
+# Simple form: three speeds, four lengths.
 SPEEDS = [
     Choice("slow", "느리게", "Adagio", "66"),
     Choice("medium", "보통", "Moderato", "100"),
     Choice("fast", "빠르게", "Allegro", "138"),
 ]
 LENGTHS = [
-    Choice("8", "짧게", "8마디", ""),
-    Choice("16", "보통", "16마디", ""),
-    Choice("32", "길게", "32마디", ""),
+    Choice("1", "짧게", "약 1분", ""),
+    Choice("3", "보통", "약 3분", ""),
+    Choice("5", "길게", "약 5분", ""),
+    Choice("8", "아주 길게", "약 8분", ""),
 ]
 DEFAULT_SPEED = "medium"
-DEFAULT_LENGTH = "16"
+DEFAULT_LENGTH = "5"
 
 # Detailed form: exact numbers.
-BARS_MIN, BARS_MAX, BARS_DEFAULT = 4, 48, 16
+MINUTES_MIN, MINUTES_MAX, MINUTES_DEFAULT = 1, 10, 5
 BPM_MIN, BPM_MAX, BPM_DEFAULT = 40, 200, 80
 # Tempo words by the lowest BPM they cover.
 TEMPO_TERMS = [(0, "Largo"), (60, "Adagio"), (76, "Andante"), (100, "Moderato"),
@@ -437,6 +433,11 @@ class Tempo:
 
 
 def tempo_for(bpm):
+    """A tempo for any number, including one GPT picked for a chapter."""
+    try:
+        bpm = min(max(int(bpm), BPM_MIN), BPM_MAX)
+    except (TypeError, ValueError):
+        bpm = BPM_DEFAULT
     term = [word for floor, word in TEMPO_TERMS if bpm >= floor][-1]
     return Tempo(term, bpm)
 
@@ -467,7 +468,7 @@ def keys_for(difficulty):
 class Request:
     mode: str               # "simple" or "detailed"
     parts: list             # Part, in score order
-    length: int
+    minutes: int            # target length; the plan decides the measures
     difficulty: Choice
     tempo: Tempo
     key: str                # "" lets GPT choose
@@ -516,7 +517,7 @@ def _simple(payload):
     if not moods:
         raise ValueError("분위기를 한 개 이상 골라 주세요.")
     speed = next((choice for choice in SPEEDS if choice.id == payload.get("speed")), None)
-    length = next((choice for choice in LENGTHS if choice.id == str(payload.get("length"))), None)
+    length = next((choice for choice in LENGTHS if choice.id == str(payload.get("minutes"))), None)
     size = SIMPLE_SIZE_BY_ID.get(payload.get("size") or DEFAULT_SIMPLE_SIZE)
     if speed is None or length is None or size is None:
         raise ValueError("규모, 빠르기, 길이를 골라 주세요.")
@@ -525,7 +526,7 @@ def _simple(payload):
     return Request(
         mode="simple",
         parts=parts,
-        length=int(length.id),
+        minutes=int(length.id),
         difficulty=DIFFICULTY_BY_ID[DEFAULT_DIFFICULTY],
         tempo=Tempo(speed.hint, int(speed.prompt)),
         key="",
@@ -562,7 +563,7 @@ def _detailed(payload):
     return Request(
         mode="detailed",
         parts=parts,
-        length=_number(payload.get("length"), BARS_MIN, BARS_MAX, "마디 수"),
+        minutes=_number(payload.get("minutes"), MINUTES_MIN, MINUTES_MAX, "연주 시간(분)"),
         difficulty=difficulty,
         tempo=tempo_for(_number(payload.get("bpm"), BPM_MIN, BPM_MAX, "템포(BPM)")),
         key=key,

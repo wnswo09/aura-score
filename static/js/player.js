@@ -1,7 +1,8 @@
 /* Playback: the server's note timeline through General MIDI soundfont samples,
  * with the OSMD cursor walking the score in step.
  *
- * Samples come from smplr (Gleitzman's MusyngKite soundfonts) at about 3 MB per
+ * The server sends the timeline in seconds, with every change of tempo already
+ * applied. Samples come from smplr (Gleitzman's MusyngKite soundfonts) at about 3 MB per
  * instrument. They load on the first press of play, stay in one shared loader
  * for the page's lifetime, and go into the browser's Cache API so the next visit
  * skips the download. localhost counts as a secure context, which the Cache API
@@ -96,9 +97,9 @@ function sustain(instrument, note, velocity, time, duration) {
   }
 }
 
-/** Score time -> playing time, in quarter notes. They are the same until the
- * ending, where the server stretches the last measures for the ritardando; its
- * anchors mark the stretch and this fills in between them. */
+/** Score time (quarter notes) -> playing time (seconds). The server's anchors
+ * mark every change of tempo between chapters and the stretched ending; within a
+ * chapter the tempo is steady, so a straight line between anchors is exact. */
 function stretch(anchors) {
   return (quarters) => {
     if (!anchors?.length || quarters <= anchors[0][0]) return quarters;
@@ -161,25 +162,23 @@ export class Player {
     }
     if (this.output !== output) return; // stopped while loading
 
-    const perQuarter = 60 / playback.bpm;
     const start = ctx.currentTime + LEAD_IN;
     for (const track of playback.tracks) {
       const instrument = made.get(track.sound);
       for (const [at, length, note, velocity] of track.notes) {
-        sustain(instrument, note, velocity, start + at * perQuarter, length * perQuarter);
+        sustain(instrument, note, velocity, start + at, length);
       }
     }
     this.made = made;
     {
       // The last chord dies away instead of holding its level to the end.
       const [from, to, level] = playback.fade;
-      output.gain.setValueAtTime(1, start + from * perQuarter);
-      output.gain.linearRampToValueAtTime(level, start + to * perQuarter);
+      output.gain.setValueAtTime(1, start + from);
+      output.gain.linearRampToValueAtTime(level, start + to);
     }
 
     this.start = start;
-    this.perQuarter = perQuarter;
-    this.end = playback.quarters * perQuarter + TAIL;
+    this.end = playback.end + TAIL;
     this.steps = cursorSteps(this.osmd).map(stretch(playback.anchors));
     this.step = 0;
     this.osmd.cursor.show();
@@ -191,8 +190,7 @@ export class Player {
   follow() {
     const elapsed = context.currentTime - this.start;
     if (elapsed >= this.end) return this.stop();
-    const quarters = elapsed / this.perQuarter;
-    while (this.step + 1 < this.steps.length && this.steps[this.step + 1] <= quarters) {
+    while (this.step + 1 < this.steps.length && this.steps[this.step + 1] <= elapsed) {
       this.osmd.cursor.next();
       this.step++;
     }

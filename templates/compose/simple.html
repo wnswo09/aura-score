@@ -57,11 +57,11 @@
     </div>
   </div>
   <div>
-    <h3>길이 <span class="optional">(끝맺음에 따라 몇 마디 달라집니다)</span></h3>
+    <h3>연주 시간 <span class="optional">(장 구성에 따라 조금 달라집니다)</span></h3>
     <div class="options">
       {% for choice in orchestra.LENGTHS %}
       <label class="option">
-        <input type="radio" name="bars" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_LENGTH %}checked{% endif %}>
+        <input type="radio" name="minutes" value="{{ choice.id }}" {% if choice.id == orchestra.DEFAULT_LENGTH %}checked{% endif %}>
         <span><b>{{ choice.label }}</b><small>{{ choice.hint }}</small></span>
       </label>
       {% endfor %}

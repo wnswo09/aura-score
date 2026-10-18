@@ -1,34 +1,41 @@
 """Ask GPT for a score and hand back MusicXML.
 
-GPT answers through Structured Outputs, so the shape of the reply is fixed by a
-JSON schema built per request: the instrument list is an enum of exactly what
-was picked, and the key is an enum trimmed to the difficulty (a beginner piece
-cannot come back in six flats). What the schema can't express — that every
-measure adds up, that notes stay in range — musicxml.py checks and repairs.
+A piece is written in two stages. One call plans the whole piece: chapters
+with their own tempo and key, sections inside them, and the themes written out
+in notes. Then every chapter is written by a call of its own, all at once, from
+that plan, and musicxml.py joins them into one score. Asked for a long piece in
+a single reply, GPT ran out of ideas and circled back; asked for one chapter at a
+time against a plan, it only has to make that chapter good.
 
-The order of the schema is the order GPT thinks in. It names a lead instrument
-and outlines every section before it writes a note, then writes the music one
-section at a time with all the instruments together. Asked for thirty-two bars
-part by part with no plan, it wrote four bars eight times.
+Every reply comes through Structured Outputs, with a JSON schema built per
+request (prompts.py). What a schema can't express — that every measure adds up,
+that notes stay in range — musicxml.py checks and repairs.
 """
 
 import json
 import logging
 import os
-import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import openai
 
 import musicxml
 import orchestra
+import prompts
 
 DEFAULT_MODEL = "gpt-6-sol"
-DEFAULT_EFFORT = "medium"
-# Reasoning and the score share this budget. A 48-bar piece for full orchestra
-# is roughly 30k tokens of notes, so this leaves the model room to think.
-MAX_OUTPUT_TOKENS = 100000
+# The plan decides what the whole piece is, so it gets to think harder.
+PLAN_EFFORT = "high"
+CHAPTER_EFFORT = "medium"
+PLAN_TOKENS = 40000
+CHAPTER_TOKENS = 60000
 TIMEOUT_SECONDS = 600
+# How many chapters are written at once.
+PARALLEL = 6
+# Sanity limits on a plan; anything past them is a plan gone wrong.
+MAX_CHAPTERS = 12
+MAX_SECTION_BARS = 64
 
 log = logging.getLogger(__name__)
 
@@ -46,258 +53,18 @@ def setup_steps():
     ]
 
 
-INSTRUCTIONS = """\
-You are an orchestral composer. You write original music as a full score in C:
-every part is written at concert (sounding) pitch, including clarinet, horn,
-trumpet, piccolo and contrabass.
-
-## Output
-Reply with JSON matching the schema. Its order is the order to work in: the plan
-first, the notes after.
-- title: a short, evocative title in Korean.
-- description: two or three sentences in Korean on the story the piece tells and
-  how the orchestra is used. Plain prose, no note names.
-- key, time_signature: choose from the allowed values.
-- lead: the instrument the piece is told through, its protagonist.
-- ending: how the piece closes. slowing: the music slows into a held chord,
-  right for most pieces. fading: it thins out and dies away to pp. firm: in
-  tempo, one strong final chord, only for a triumphant piece.
-- outline: the plan for the whole piece, settled before any notes. One entry per
-  section, in order:
-  - name: A, B, A', C, Coda... Material that returns takes a prime.
-  - role: intro, theme, contrast, development, solo, climax, return or coda.
-  - bars: how many measures it lasts.
-  - melody: the instrument carrying the main line in this section.
-  - texture: solo (the lead alone, or over the barest support), thin, medium or full.
-  - accompaniment: what the instruments under the melody do here: sustained
-    (held chords), arpeggio (broken chords), repeated (pulsing repeated notes),
-    offbeat (chords off the beat), pedal (one held or reiterated bass note under
-    changing harmony), countermelody (a second tune against the first) or none.
-  - dynamic: the overall level.
-  - idea: one sentence in Korean on what happens here that has not happened before.
-- sections: the music, one entry per outline entry, in the same order. Each
-  holds one part per requested instrument.
-
-## Measure notation
-Each measure is one string of space-separated tokens in time order.
-- Note: PITCH:DURATION, e.g. C4:4, F#5:8, Bb3:2.
-- Chord, only where the part allows several notes: pitches joined by +, e.g. C4+E4:2
-- Rest: r:DURATION, e.g. r:4
-- Whole-measure rest: R, alone in the measure.
-- PITCH is a letter A-G, optionally # ## b bb, then the octave. C4 is middle C;
-  B3 is the note just below it.
-- DURATION: 1 whole, 2 half, 4 quarter, 8 eighth, 16 sixteenth. A trailing .
-  makes it dotted: 4. is a dotted quarter.
-- Optional marks straight after the duration, in any order:
-  ~ tie into the next note, which must have exactly the same pitches
-  ( a slur starts on this note      ) a slur ends on this note
-  > accent      ' staccato
-- Dynamics are separate tokens placed right before the note they apply to:
-  @pp @p @mp @mf @f @ff
-
-Example measures in 4/4:
-  "@p C4:4( D4:8 E4:8 F4:4 G4:4)"
-  "G4+B4:2. r:4"
-  "E5:2~ E5:8 D5:8 C5:4"
-  "R"
-
-## Hard rules
-1. The durations in every measure add up to exactly one bar: 4/4 = one whole
-   note, 3/4 = 2., 2/4 = 2, 6/8 = 2. (six eighths). Count every measure.
-2. Stay inside each part's range and never exceed its number of simultaneous
-   notes. That holds for the lead at the climax too: when the line wants to go
-   higher than the instrument can, give those bars to one that can.
-3. No tuplets, grace notes, or anything else not described above.
-4. The bars in the outline add up to a total inside the range the request
-   gives. Every instrument appears in every section with exactly that section's
-   number of measures; a part with nothing to play in a measure writes R.
-5. Give every part a dynamic at its first entrance and wherever the level changes.
-
-## Tell a story; do not loop
-The commonest failure is four pleasant bars played again and again. Length has to
-be earned by things changing.
-- The lead is the protagonist. It states the theme, and whenever the theme comes
-  back it has changed: ornamented, extended, cut short, moved to another register,
-  set over new harmony. Write it like someone speaking with feeling: phrases of
-  different lengths, a held note where the line needs to breathe, a leap where it
-  reaches for something.
-- In a piece of 16 measures or more, give the lead a solo passage. The others
-  fall silent or thin to the barest support (a held note, a few soft chords) and
-  the lead plays freely and expressively. Where it goes is your call: put it
-  where the story wants it. Its outline entry has role solo and texture solo.
-- Pass the melody around. Other instruments take it over, answer it, or set a
-  countermelody against it; then the lead takes it back.
-- Nothing returns unchanged. No section copies an earlier one. When material
-  returns, change at least two of: who plays it, register, accompaniment figure,
-  harmony, rhythm, dynamics, an added countermelody.
-- Within a part, never write the same measure more than twice running.
-- The accompaniment changes with the section. Neighbouring sections never share
-  an accompaniment type, and the notes really are the type the outline names:
-  if it says sustained, nobody is playing running eighth notes underneath.
-- Vary the rhythm as well as the notes. A part that keeps one rhythm bar after
-  bar sounds like a loop even when the pitches change, and that goes for the
-  melody too: use long notes, dotted figures, runs, rests on the beat and notes
-  tied across it, as far as the difficulty allows.
-- Do not cycle one chord progression all the way through. The contrasting
-  section goes somewhere else harmonically; write the accidentals, the key
-  signature stays.
-- Shape one arc with a single climax, reached with more instruments, higher
-  register and more volume. The whole orchestra at its loudest happens once. The
-  request says where the climax and the solo fall; lay the sections out to fit
-  it rather than reaching for the same layout every time.
-
-## The ending
-A piece that just stops has failed, however good the rest was. Land it.
-- The last section exists to end the piece. From 16 measures up it lasts at
-  least four measures, and nothing new starts in it.
-- Slow the motion as the end approaches: longer notes, fewer of them, the harmony
-  changing less often. The measure before the final chord prepares the tonic
-  with the dominant.
-- The melody reaches its last note on the downbeat of the final chord. It does
-  not arrive on the last beat, and it does not keep moving once it has arrived.
-- The final measure is the tonic chord alone, held for the whole measure by
-  every instrument playing in it: the root in the bass, the melody on a note of
-  the chord. After a loud or fast piece, hold it for two measures, tied.
-- The performance adds the ritardando and the pause on the last chord that your
-  ending calls for; write the notes plainly and do not shorten them to imitate it.
-- Take the measures the ending needs. The length is a target, not a deadline:
-  never cut the ending short to hit a number.
-
-## Musical guidance
-- The whole orchestra shares one harmony, measure by measure. Settle the chord
-  progression first, then voice it across the parts. Doubling a line in octaves
-  is fine; notes that clash with the harmony by accident are not.
-- Orchestrate idiomatically: strings carry the foundation, woodwinds color and
-  answer, brass reinforce the climaxes, timpani mark tonic and dominant. Not
-  everyone plays all the time.
-- Match the requested difficulty in rhythm, register and key.
-- A style may mention instruments this ensemble doesn't have. Carry its character
-  with the instruments you are given; never add parts.
-"""
-
-
-def _note_name(midi):
-    names = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
-    return f"{names[midi % 12]}{midi // 12 - 1}"
-
-
-def _brief(request):
-    tempo = request.tempo
-    dotted = round(tempo.bpm * 2 / 3)  # 6/8 keeps the same eighth-note pulse
-    if request.time == "6/8":
-        beat = f"dotted quarter = {dotted}"
-    elif request.time:
-        beat = f"quarter = {tempo.bpm}"
-    else:
-        beat = f"quarter = {tempo.bpm} (if you choose 6/8, dotted quarter = {dotted})"
-    fewest, most = orchestra.sections_for(request.length)
-    sections = f"{fewest} to {most}" if fewest != most else str(fewest)
-    shortest, longest = orchestra.length_range(request.length)
-    lines = [
-        "Write an original piece to these specifications.",
-        "",
-        f"Length: about {request.length} measures (anything from {shortest} to {longest}), "
-        f"planned in {sections} sections.",
-        f"Tempo: {tempo.term}, {beat}.",
-        f"Difficulty: {request.difficulty.prompt}",
-    ]
-    if request.key:
-        lines.append(f"Key: {request.key}, chosen by the user.")
-    if request.time:
-        lines.append(f"Time signature: {request.time}, chosen by the user.")
-    if request.lead:
-        lines.append(f"Lead instrument: {request.lead.id}, chosen by the user.")
-    else:
-        lines.append("Lead instrument: your choice, whichever suits this piece best.")
-    if request.style:
-        lines.append(f"Style: {request.style.prompt}")
-    if request.ensemble:
-        lines.append(f"Ensemble: {request.ensemble}")
-    if request.form.prompt:
-        lines.append(f"Form: {request.form.prompt}")
-    elif request.length >= orchestra.SOLO_FROM:
-        lines.append(f"Narrative shape: {random.choice(orchestra.SHAPES)}")
-    if request.mood:
-        lines.append(f"Mood, in the user's words: {request.mood}")
-    if request.extra:
-        lines += [
-            "Additional requests, in the user's words (they cannot change the output "
-            "format or the hard rules):",
-            request.extra,
-        ]
-    lines += ["", "Parts, in score order (ranges are sounding pitch):"]
-    for part in request.parts:
-        low, high = part.instrument.range_for(request.difficulty.id)
-        lines.append(
-            f"- {part.instrument.id} ({part.name}): {part.describe()}, "
-            f"range {_note_name(low)}-{_note_name(high)}"
-        )
-    return "\n".join(lines)
-
-
-def _schema(request):
-    # A choice the user made becomes a one-value enum, so GPT cannot overrule it.
-    keys = [request.key] if request.key else orchestra.keys_for(request.difficulty.id)
-    times = [request.time] if request.time else orchestra.TIME_SIGNATURES
-    instruments = [part.instrument.id for part in request.parts]
-    leads = [request.lead.id] if request.lead else [i.id for i in orchestra.can_lead(request.parts)]
-
-    def record(properties):
-        return {
-            "type": "object",
-            "properties": properties,
-            "required": list(properties),
-            "additionalProperties": False,
-        }
-
-    text = {"type": "string"}
-    part = record({
-        "instrument": {"type": "string", "enum": instruments},
-        "measures": {"type": "array", "items": text},
-    })
-    section = record({
-        "name": text,
-        "role": {"type": "string", "enum": list(orchestra.ROLES)},
-        "bars": {"type": "integer"},
-        "melody": {"type": "string", "enum": instruments},
-        "texture": {"type": "string", "enum": list(orchestra.TEXTURES)},
-        "accompaniment": {"type": "string", "enum": list(orchestra.ACCOMPANIMENTS)},
-        "dynamic": {"type": "string", "enum": ["pp", "p", "mp", "mf", "f", "ff"]},
-        "idea": text,
-    })
-    return record({
-        "title": text,
-        "description": text,
-        "key": {"type": "string", "enum": keys},
-        "time_signature": {"type": "string", "enum": times},
-        "lead": {"type": "string", "enum": leads},
-        "ending": {"type": "string", "enum": list(orchestra.ENDING_BY_ID)},
-        "outline": {"type": "array", "items": section},
-        "sections": {
-            "type": "array",
-            "items": record({"name": text, "parts": {"type": "array", "items": part}}),
-        },
-    })
-
-
-def _call(request):
+def _respond(name, instructions, brief, schema, effort, budget):
+    """One structured call -> (parsed JSON, usage). Raises ScoreServiceError."""
     model = os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=TIMEOUT_SECONDS)
     try:
-        return client.responses.create(
+        response = client.responses.create(
             model=model,
-            instructions=INSTRUCTIONS,
-            input=_brief(request),
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "orchestral_score",
-                    "schema": _schema(request),
-                    "strict": True,
-                }
-            },
-            reasoning={"effort": os.environ.get("OPENAI_REASONING_EFFORT") or DEFAULT_EFFORT},
-            max_output_tokens=MAX_OUTPUT_TOKENS,
+            instructions=instructions,
+            input=brief,
+            text={"format": {"type": "json_schema", "name": name, "schema": schema, "strict": True}},
+            reasoning={"effort": effort},
+            max_output_tokens=budget,
         )
     except openai.AuthenticationError as error:
         raise ScoreServiceError("OPENAI_API_KEY 가 올바르지 않습니다. .env 를 확인하세요.") from error
@@ -317,45 +84,107 @@ def _call(request):
         log.warning("OpenAI request failed: %s", error)
         raise ScoreServiceError(f"GPT 요청이 실패했습니다: {str(error)[:200]}") from error
 
-
-def generate(request):
-    """Request -> the page's score payload (see musicxml.build)."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise ScoreServiceError("OPENAI_API_KEY 가 없어 악보를 만들 수 없습니다. .env 를 채워 주세요.")
-
-    started = time.monotonic()
-    response = _call(request)
     if response.status == "incomplete":
         reason = getattr(response.incomplete_details, "reason", "")
         if reason == "max_output_tokens":
-            raise ScoreServiceError("악보가 너무 길어 중간에 끊겼습니다. 곡 길이나 악기 수를 줄여 주세요.")
+            raise ScoreServiceError("GPT 의 답이 너무 길어 중간에 끊겼습니다. 곡 길이나 악기 수를 줄여 주세요.")
         raise ScoreServiceError(f"GPT 가 답을 끝맺지 못했습니다 ({reason}). 다시 시도해 주세요.")
-
     for item in response.output:
         for content in getattr(item, "content", None) or []:
             if content.type == "refusal":
                 raise ScoreServiceError(f"GPT 가 요청을 거절했습니다: {content.refusal}")
-
     try:
-        data = json.loads(response.output_text)
+        return json.loads(response.output_text), response.usage
     except ValueError as error:
         log.warning("Unreadable GPT output: %.500s", response.output_text)
         raise ScoreServiceError("GPT 의 답을 읽지 못했습니다. 다시 시도해 주세요.") from error
 
+
+def _usable(plan):
+    """Keep the chapters and sections a writer can actually work from."""
+    chapters = []
+    for chapter in plan.get("chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        sections = []
+        for section in chapter.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            try:
+                bars = int(section.get("bars"))
+            except (TypeError, ValueError):
+                continue
+            if bars > 0:
+                sections.append({**section, "bars": min(bars, MAX_SECTION_BARS)})
+        if sections:
+            chapters.append({**chapter, "sections": sections, "tempo": orchestra.tempo_for(chapter.get("tempo")).bpm})
+    return chapters[:MAX_CHAPTERS]
+
+
+def _write(request, plan, index):
+    """Write one chapter, with one more try if the first reply is unusable."""
+    for attempt in (1, 2):
+        try:
+            return _respond(
+                "orchestral_chapter", prompts.CHAPTER, prompts.chapter_brief(request, plan, index),
+                prompts.chapter_schema(request), os.environ.get("OPENAI_REASONING_EFFORT") or CHAPTER_EFFORT,
+                CHAPTER_TOKENS,
+            )
+        except ScoreServiceError as error:
+            if attempt == 2:
+                raise ScoreServiceError(f"{index + 1}장을 쓰지 못했습니다: {error}") from error
+            log.warning("chapter %d failed, retrying: %s", index + 1, error)
+
+
+def generate(request, progress=lambda text: None):
+    """Request -> the page's score payload (see musicxml.build).
+
+    `progress` is called with a sentence for the person waiting, at each stage.
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ScoreServiceError("OPENAI_API_KEY 가 없어 악보를 만들 수 없습니다. .env 를 채워 주세요.")
+    started = time.monotonic()
+    tokens_in = tokens_out = 0
+
+    progress("곡 전체를 설계하는 중 (장 구성, 템포와 조성, 주제 선율)")
+    plan, usage = _respond(
+        "orchestral_plan", prompts.PLAN, prompts.plan_brief(request), prompts.plan_schema(request),
+        os.environ.get("OPENAI_PLAN_EFFORT") or PLAN_EFFORT, PLAN_TOKENS,
+    )
+    tokens_in, tokens_out = usage.input_tokens, usage.output_tokens
+    plan["chapters"] = _usable(plan)
+    count = len(plan["chapters"])
+    if not count:
+        raise ScoreServiceError("GPT 가 곡을 설계하지 못했습니다. 다시 시도해 주세요.")
+    planned = time.monotonic() - started
+
+    music, done = [None] * count, 0
+    progress(f"{count}개 장을 동시에 쓰는 중 (0/{count} 완성)")
+    with ThreadPoolExecutor(max_workers=min(count, PARALLEL)) as pool:
+        jobs = {pool.submit(_write, request, plan, index): index for index in range(count)}
+        for job in as_completed(jobs):
+            music[jobs[job]], usage = job.result()
+            tokens_in += usage.input_tokens
+            tokens_out += usage.output_tokens
+            done += 1
+            progress(f"{count}개 장을 동시에 쓰는 중 ({done}/{count} 완성)")
+
+    progress("악보로 옮기는 중")
+    for chapter, written in zip(plan["chapters"], music):
+        chapter["music"] = written
     try:
-        score = musicxml.build(data, request)
+        score = musicxml.build(plan, request)
     except ValueError as error:
         raise ScoreServiceError(str(error)) from error
 
     # One line per score, so cost and quality can be read off the server log.
-    usage = response.usage
-    reasoning = getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0)
     repetition = score["repetition"]
     log.info(
-        "score: %s, %s mode, %d parts x %d bars, %.0fs, tokens in %d / out %d (reasoning %d), "
-        "%d repairs, repetition exact %d%% / rhythm %d%% / %d looped bars",
-        response.model, request.mode, len(request.parts), score["measures"],
-        time.monotonic() - started, usage.input_tokens, usage.output_tokens, reasoning or 0,
+        "score: %s mode, %d parts, %d chapters, %d bars, %ds of music (asked %ds), "
+        "plan %.0fs + chapters %.0fs, tokens in %d / out %d, %d repairs, "
+        "repetition exact %d%% / rhythm %d%% / %d looped bars",
+        request.mode, len(request.parts), count, score["measures"], score["duration"],
+        request.minutes * 60, planned, time.monotonic() - started - planned, tokens_in, tokens_out,
         score["repairs"], repetition["exact"], repetition["rhythm"], repetition["loops"],
     )
     return score

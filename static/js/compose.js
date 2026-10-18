@@ -72,7 +72,7 @@ function simplePayload(data) {
     lead: data.get("lead") || "",
     moods: data.getAll("moods"),
     speed: data.get("speed"),
-    length: data.get("bars"),
+    minutes: data.get("minutes"),
     extra: (data.get("extra") || "").trim(),
   };
 }
@@ -148,7 +148,7 @@ function detailedPayload(data) {
   return {
     mode,
     players: players(),
-    length: data.get("bars"),
+    minutes: data.get("minutes"),
     bpm: data.get("bpm"),
     difficulty: data.get("difficulty"),
     key: data.get("key"),
@@ -176,6 +176,24 @@ if (mode === "simple") setUpSimple();
 else setUpDetailed();
 
 // ---------------------------------------------------------------- generate
+//
+// Writing a long piece takes minutes, so the server runs it as a job: starting
+// one returns an id at once, and the page asks about it every two seconds. The
+// id is kept for this tab, so leaving and coming back picks the job up again.
+
+const JOB = "aura-score-job";
+
+function remember(job) {
+  try { sessionStorage.setItem(JOB, job); } catch { /* private mode: no resume */ }
+}
+
+function forget() {
+  try { sessionStorage.removeItem(JOB); } catch { /* nothing kept */ }
+}
+
+function remembered() {
+  try { return sessionStorage.getItem(JOB); } catch { return null; }
+}
 
 function say(state, text) {
   status.className = `gen-status ${state}`;
@@ -183,13 +201,45 @@ function say(state, text) {
   status.hidden = false;
 }
 
-function holdPage(event) {
-  event.preventDefault();
-  event.returnValue = "";
+function clock(seconds) {
+  return seconds < 60 ? `${seconds}초` : `${Math.floor(seconds / 60)}분 ${seconds % 60}초`;
 }
 
-function seconds(since) {
-  return Math.round((Date.now() - since) / 1000);
+function busy(on) {
+  button.disabled = on;
+  button.textContent = on ? "악보를 쓰는 중…" : "악보 만들기";
+}
+
+/** Ask about a job until it is done. `quiet` is for picking one up on page
+ * load, where a job the server has forgotten is simply let go. */
+async function wait(job, quiet = false) {
+  busy(true);
+  try {
+    for (;;) {
+      const response = await fetch(`/api/scores/${job}`);
+      const report = await response.json().catch(() => ({}));
+      if (response.status === 404 && quiet) {
+        forget();
+        status.hidden = true;
+        return;
+      }
+      if (!response.ok) throw new Error(report.error || `서버 오류가 났습니다 (${response.status}).`);
+      if (report.state === "done") {
+        say("good", `완성했습니다 · ${clock(report.elapsed)} 걸렸습니다`);
+        await render(report.score);
+        return;
+      }
+      if (report.state === "failed") throw new Error(report.error);
+      say("working", `${report.stage || "준비하는 중"}… ${clock(report.elapsed)}`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  } catch (failure) {
+    forget();
+    status.hidden = true;
+    fail(failure instanceof TypeError ? "서버에 연결하지 못했습니다." : failure.message);
+  } finally {
+    busy(false);
+  }
 }
 
 form.addEventListener("submit", async (event) => {
@@ -201,35 +251,22 @@ form.addEventListener("submit", async (event) => {
   const complaint = problem(payload);
   if (complaint) return fail(complaint);
 
-  button.disabled = true;
-  button.textContent = "악보를 쓰는 중…";
-  // Nothing is saved yet, so leaving now throws the finished score away.
-  window.addEventListener("beforeunload", holdPage);
-  const started = Date.now();
-  const tick = () => say("working", `GPT 가 악보를 쓰고 있습니다… ${seconds(started)}초`);
-  tick();
-  const timer = setInterval(tick, 1000);
-
+  busy(true);
+  say("working", "작업을 시작하는 중…");
   try {
     const response = await fetch("/api/scores", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const score = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(score.error || `서버 오류가 났습니다 (${response.status}).`);
-
-    clearInterval(timer);
-    say("good", `완성했습니다 · ${seconds(started)}초`);
-    await render(score);
+    const started = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(started.error || `서버 오류가 났습니다 (${response.status}).`);
+    remember(started.job);
+    await wait(started.job);
   } catch (failure) {
     status.hidden = true;
     fail(failure instanceof TypeError ? "서버에 연결하지 못했습니다." : failure.message);
-  } finally {
-    window.removeEventListener("beforeunload", holdPage);
-    clearInterval(timer);
-    button.disabled = false;
-    button.textContent = "악보 만들기";
+    busy(false);
   }
 });
 
@@ -260,7 +297,8 @@ playButton.addEventListener("click", () => {
   });
 });
 
-/** One section of GPT's plan: where it is, what it is for, and what is new in it. */
+/** One section of GPT's plan: where it is, what it is for, and what is new in it.
+ * The badge is the rehearsal letter printed in the score. */
 function flowItem(section) {
   const item = document.createElement("li");
   item.classList.toggle("solo", section.solo);
@@ -270,11 +308,31 @@ function flowItem(section) {
     section.texture, section.accompaniment, section.dynamic,
   ].filter(Boolean).join(" · ");
   head.append(
-    Object.assign(document.createElement("b"), { textContent: section.name }),
+    Object.assign(document.createElement("b"), { textContent: section.mark }),
     Object.assign(document.createElement("span"), { textContent: facts }),
   );
   item.append(head, Object.assign(document.createElement("p"), { textContent: section.idea }));
   return item;
+}
+
+const NUMERALS = "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ";
+
+/** A chapter: its title, tempo, key and length, what it is for, and its sections. */
+function chapterBlock(chapter) {
+  const block = Object.assign(document.createElement("section"), { className: "chapter" });
+  const head = Object.assign(document.createElement("div"), { className: "chapter-head" });
+  head.append(
+    Object.assign(document.createElement("h3"), {
+      textContent: `${NUMERALS[(chapter.number - 1) % NUMERALS.length]}. ${chapter.title}`,
+    }),
+    Object.assign(document.createElement("span"), {
+      textContent: [chapter.tempo, chapter.key, `${chapter.from}–${chapter.to}마디`, clock(chapter.seconds)].join(" · "),
+    }),
+  );
+  const sections = Object.assign(document.createElement("ol"), { className: "flow" });
+  sections.replaceChildren(...chapter.sections.map(flowItem));
+  block.append(head, Object.assign(document.createElement("p"), { className: "chapter-purpose", textContent: chapter.purpose }), sections);
+  return block;
 }
 
 async function render(score) {
@@ -282,10 +340,11 @@ async function render(score) {
   current = score;
   document.getElementById("score-title").textContent = score.title;
   document.getElementById("score-meta").textContent = [
-    score.key, score.time, score.tempo, `${score.measures}마디`, `주인공 ${score.lead}`, score.ending, "Score in C",
+    clock(score.duration), `${score.chapters.length}장`, `${score.measures}마디`, score.key, score.time,
+    `주인공 ${score.lead}`, score.ending, "Score in C",
   ].join(" · ");
   document.getElementById("score-desc").textContent = score.description;
-  document.getElementById("score-flow").replaceChildren(...score.flow.map(flowItem));
+  document.getElementById("score-flow").replaceChildren(...score.chapters.map(chapterBlock));
   document.getElementById("score-repetition").textContent =
     `반복도: 앞 마디와 똑같은 마디 ${score.repetition.exact}% · 리듬이 같은 마디 ${score.repetition.rhythm}%`;
 
@@ -328,3 +387,7 @@ document.getElementById("download").addEventListener("click", () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 });
+
+// A job started earlier in this tab, still running or already done.
+const pending = remembered();
+if (pending) wait(pending, true);

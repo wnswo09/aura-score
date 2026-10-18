@@ -344,10 +344,17 @@ textarea { resize: vertical; line-height: 1.6; }
 .result h2 { margin: 0 0 6px; font-size: 21px; letter-spacing: -0.3px; }
 .meta { margin: 0; font-size: 13px; color: var(--muted); }
 .score-desc { margin: 16px 0 0; font-size: 14.5px; line-height: 1.8; color: #d6d9e2; }
-/* GPT's plan for the piece, section by section. */
+/* GPT's plan for the piece: chapters, and the sections inside them. */
+.chapters { margin: 18px 0 10px; display: grid; gap: 14px; }
+.chapter { padding: 14px 16px 16px; border: 1px solid var(--line); border-radius: 16px; }
+.chapter-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.chapter-head h3 { margin: 0; font-size: 16px; }
+.chapter-head span { font-size: 12.5px; color: var(--muted); }
+.chapter-purpose { margin: 6px 0 0; font-size: 13.5px; line-height: 1.6; color: #c3c7d2; }
+
 .flow {
   list-style: none;
-  margin: 16px 0 10px;
+  margin: 12px 0 0;
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));

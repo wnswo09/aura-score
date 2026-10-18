@@ -26,6 +26,7 @@ from flask import (
 )
 
 import firebase_setup
+import jobs
 import orchestra
 import score_service
 
@@ -104,16 +105,30 @@ def new_score():
 @app.route("/api/scores", methods=["POST"])
 @login_required
 def api_create_score():
-    """Form in, finished MusicXML out. Takes as long as GPT takes — a minute or two."""
+    """Start writing a score. Answers at once with a job id; writing takes minutes."""
     try:
         brief = orchestra.read_request(request.get_json(silent=True) or {})
     except ValueError as failure:
         return jsonify({"error": str(failure)}), 400
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"error": "OPENAI_API_KEY 가 없어 악보를 만들 수 없습니다. .env 를 채워 주세요."}), 503
 
-    try:
-        return jsonify(score_service.generate(brief))
-    except score_service.ScoreServiceError as failure:
-        return jsonify({"error": str(failure)}), 502
+    job = jobs.start(
+        current_user()["uid"],
+        lambda progress: score_service.generate(brief, progress),
+        score_service.ScoreServiceError,
+    )
+    return jsonify({"job": job}), 202
+
+
+@app.route("/api/scores/<job_id>")
+@login_required
+def api_score_status(job_id):
+    """Where a job has got to; the finished score once it is done."""
+    report = jobs.status(job_id, current_user()["uid"])
+    if report is None:
+        return jsonify({"error": "이 작업을 찾을 수 없습니다. 서버가 다시 켜졌다면 처음부터 만들어 주세요."}), 404
+    return jsonify(report)
 
 
 # ---------------------------------------------------------------- auth

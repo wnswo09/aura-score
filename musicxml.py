@@ -254,37 +254,45 @@ def _clef(instrument, bars):
     return usual
 
 
-def _layout(data, most):
-    """The outline's sections, laid end to end, up to `most` measures.
+# A plan asking for more than this has gone wrong; ten minutes at a brisk 4/4 is ~300.
+MAX_MEASURES = 400
 
-    Returns ([[outline entry, its music, first measure, measures]], repairs).
-    How long the piece runs is GPT's call within the range it was given; only a
-    plan that overruns the top of the range is cut.
+
+def _layout(plan):
+    """Every chapter's sections, laid end to end.
+
+    Returns (chapters, spans, repairs). `chapters` has, for each chapter that
+    has any measures, its plan, tempo and key. `spans` has, for each section,
+    [its plan, its music, first measure, measures, chapter number].
     """
-    outline = data.get("outline") if isinstance(data.get("outline"), list) else []
-    music = data.get("sections") if isinstance(data.get("sections"), list) else []
-    spans, repairs, at = [], 0, 0
-    for index, entry in enumerate(outline):
-        if not isinstance(entry, dict):
+    chapters, spans, repairs, at = [], [], 0, 0
+    for chapter in plan.get("chapters") or []:
+        if not isinstance(chapter, dict):
             continue
-        try:
-            wanted = int(entry.get("bars"))
-        except (TypeError, ValueError):
-            wanted = 0
-        bars = max(0, min(wanted, most - at))
-        repairs += bars != wanted
-        if bars:
-            written = music[index] if index < len(music) and isinstance(music[index], dict) else {}
-            spans.append([entry, written, at, bars])
-            at += bars
-    if not spans:
-        # No usable plan: take the first section of music at whatever length it has.
-        written = music[0] if music and isinstance(music[0], dict) else {}
-        longest = max((len(part.get("measures") or []) for part in written.get("parts") or []
-                       if isinstance(part, dict)), default=1)
-        spans.append([{}, written, 0, max(1, min(longest, most))])
-        repairs += 1
-    return spans, repairs
+        written = chapter.get("music") if isinstance(chapter.get("music"), dict) else {}
+        music = written.get("sections") if isinstance(written.get("sections"), list) else []
+        first = at
+        for index, section in enumerate(chapter.get("sections") or []):
+            if not isinstance(section, dict):
+                continue
+            try:
+                wanted = int(section.get("bars"))
+            except (TypeError, ValueError):
+                wanted = 0
+            bars = max(0, min(wanted, MAX_MEASURES - at))
+            repairs += bars != wanted
+            if bars:
+                notes = music[index] if index < len(music) and isinstance(music[index], dict) else {}
+                spans.append([section, notes, at, bars, len(chapters)])
+                at += bars
+        if at > first:
+            key = chapter.get("key")
+            chapters.append({
+                "plan": chapter,
+                "tempo": orchestra.tempo_for(chapter.get("tempo")),
+                "key": key if key in orchestra.KEY_BY_LABEL else None,
+            })
+    return chapters, spans, repairs
 
 
 def _trim(parts, spans):
@@ -324,22 +332,37 @@ def _land(parts):
     return fixed
 
 
-def build(data, request):
-    """GPT's JSON plus the request it answered -> the page's score payload.
+def _place(chapters, spans):
+    """Where each chapter starts and ends once the score is trimmed. A chapter
+    the trimming emptied is dropped."""
+    for number, chapter in enumerate(chapters):
+        mine = [span for span in spans if span[4] == number]
+        chapter["first"] = mine[0][2] if mine else None
+        chapter["last"] = mine[-1][2] + mine[-1][3] - 1 if mine else None
+    chapters[:] = [chapter for chapter in chapters if chapter["first"] is not None]
+
+
+def build(plan, request):
+    """The plan, with each chapter's music attached as chapter["music"], plus the
+    request it answered -> the page's score payload.
 
     Raises ValueError when there is nothing worth showing.
     """
-    key = data.get("key") if data.get("key") in orchestra.KEY_BY_LABEL else request.key or "C major"
-    time = data.get("time_signature")
+    home = plan.get("key") if plan.get("key") in orchestra.KEY_BY_LABEL else request.key or "C major"
+    time = plan.get("time_signature")
     if time not in TIME_SIGNATURES:
         time = request.time or "4/4"
     length = measure_length(time)
 
-    # GPT writes section by section; the score needs each instrument end to end.
-    shortest, longest = orchestra.length_range(request.length)
-    spans, repairs = _layout(data, longest)
+    # GPT writes chapter by chapter and section by section; the score needs each
+    # instrument end to end.
+    chapters, spans, repairs = _layout(plan)
+    if not spans:
+        raise ValueError("GPT 가 곡을 설계하지 못했습니다. 다시 시도해 주세요.")
+    for chapter in chapters:
+        chapter["key"] = chapter["key"] or home
     written = {part.instrument.id: [] for part in request.parts}
-    for _entry, music, _first, bars in spans:
+    for _section, music, _first, bars, _chapter in spans:
         given = {}
         for part in music.get("parts") or []:
             if isinstance(part, dict) and part.get("instrument") not in given:
@@ -375,45 +398,74 @@ def build(data, request):
         raise ValueError("GPT 가 음표를 하나도 쓰지 않았습니다. 다시 시도해 주세요.")
 
     repairs += _trim(parts, spans) + _land(parts)
+    _place(chapters, spans)
     total = len(parts[0][1])
-    repairs += total < shortest
 
     playing = {part.instrument.id: part for part in request.parts}
-    lead = playing.get(data.get("lead")) or playing.get(request.lead.id if request.lead else None) or request.parts[0]
-    ending = orchestra.ENDING_BY_ID.get(data.get("ending")) or orchestra.ENDING_BY_ID[orchestra.DEFAULT_ENDING]
+    lead = playing.get(plan.get("lead")) or playing.get(request.lead.id if request.lead else None) or request.parts[0]
+    ending = orchestra.ENDING_BY_ID.get(plan.get("ending")) or orchestra.ENDING_BY_ID[orchestra.DEFAULT_ENDING]
     flow = _flow(spans, playing)
-    marks = _marks(flow, lead, ending, _final_chord(parts))
+    marks = _marks(flow, playing, ending, _final_chord(parts))
+    playback = _playback(parts, length, chapters, marks)
 
-    title = str(data.get("title") or "").strip()[:60] or "무제"
+    title = str(plan.get("title") or "").strip()[:60] or "무제"
     return {
         "title": title,
-        "description": str(data.get("description") or "").strip()[:600],
-        "key": key,
+        "description": str(plan.get("description") or "").strip()[:800],
+        "key": home,
         "time": time,
-        "tempo": _tempo_label(request.tempo, time),
+        "tempo": _tempo_label(chapters[0]["tempo"], time),
         "measures": total,
+        "duration": round(playback["end"]),
         "lead": lead.instrument.ko,
         "ending": ending.label,
-        "flow": flow,
+        "chapters": _chapter_cards(chapters, flow, playback, time),
         "repairs": repairs,
         "repetition": _repetition(parts),
-        "musicxml": _write(title, parts, key, time, request, marks),
-        "playback": _playback(parts, length, request.tempo, marks),
+        "musicxml": _write(title, parts, time, chapters, marks),
+        "playback": playback,
     }
+
+
+def _letter(number):
+    """0 -> A, 25 -> Z, 26 -> AA: rehearsal letters that never run out."""
+    letters, number = "", number + 1
+    while number:
+        number, rest = divmod(number - 1, 26)
+        letters = chr(ord("A") + rest) + letters
+    return letters
+
+
+def _chapter_cards(chapters, flow, playback, time):
+    """Each chapter as the page shows it, with its sections inside."""
+    starts = playback["chapters"] + [playback["end"]]
+    return [{
+        "number": number + 1,
+        "title": str(chapter["plan"].get("title") or "").strip()[:40],
+        "tempo": _tempo_label(chapter["tempo"], time),
+        "key": chapter["key"],
+        "from": chapter["first"] + 1,
+        "to": chapter["last"] + 1,
+        "seconds": round(starts[number + 1] - starts[number]),
+        "purpose": str(chapter["plan"].get("purpose") or "").strip()[:200],
+        "sections": [section for section in flow if chapter["first"] < section["to"] <= chapter["last"] + 1],
+    } for number, chapter in enumerate(chapters)]
 
 
 def _flow(spans, playing):
     """The plan as the page shows it: what each stretch of the piece is for."""
     flow = []
-    for number, (entry, _music, first, bars) in enumerate(spans):
+    for number, (entry, _music, first, bars, _chapter) in enumerate(spans):
         melody = playing.get(entry.get("melody"))
         flow.append({
-            "name": str(entry.get("name") or "").strip()[:8] or chr(ord("A") + number % 26),
+            "mark": _letter(number),
+            "name": str(entry.get("name") or "").strip()[:12],
             "role": orchestra.ROLES.get(entry.get("role"), ""),
             "solo": entry.get("role") == "solo",
             "from": first + 1,
             "to": first + bars,
             "melody": melody.instrument.ko if melody else "",
+            "melody_id": melody.instrument.id if melody else "",
             "texture": orchestra.TEXTURES.get(entry.get("texture"), ""),
             "accompaniment": orchestra.ACCOMPANIMENTS.get(entry.get("accompaniment"), ""),
             "dynamic": entry.get("dynamic") if entry.get("dynamic") in DYNAMICS else "",
@@ -433,23 +485,25 @@ def _final_chord(parts):
     )
 
 
-def _marks(flow, lead, ending, struck):
+def _marks(flow, playing, ending, struck):
     """What the plan adds to the page of music: a rehearsal letter where each
-    section starts, Solo over the lead's staff where it plays alone, and the
-    ending's ritardando and fermata."""
+    section starts, Solo over whichever staff plays alone, and the ending's
+    ritardando and fermata."""
     slow_from = max(0, struck - ending.measures)
-    words, solo = {}, set()
+    words, solo = {}, {}
     for section, after in zip(flow, flow[1:] + [None]):
-        if not section["solo"]:
+        part = playing.get(section["melody_id"])
+        if not section["solo"] or part is None:
             continue
-        words[section["from"] - 1] = "Solo"
-        solo.update(range(section["from"] - 1, section["to"]))
+        instrument = part.instrument.id
+        words[(instrument, section["from"] - 1)] = "Solo"
+        solo.setdefault(instrument, set()).update(range(section["from"] - 1, section["to"]))
         # Several players share this staff, so say when the rest of them come back in.
-        if after and not after["solo"] and lead.players > 1:
-            words[after["from"] - 1] = "tutti"
+        still_alone = after and after["solo"] and after["melody_id"] == instrument
+        if after and not still_alone and part.players > 1:
+            words[(instrument, after["from"] - 1)] = "tutti"
     return {
-        "rehearsal": {section["from"] - 1: section["name"] for section in flow},
-        "lead": lead,
+        "rehearsal": {section["from"] - 1: section["mark"] for section in flow},
         "words": words,
         "solo": solo,
         "ending": ending,
@@ -517,51 +571,62 @@ VELOCITIES = {"ppp": 28, "pp": 38, "p": 50, "mp": 64, "mf": 78, "f": 94, "ff": 1
 ACCENT = 15
 
 
-def _playback(parts, length, tempo, marks):
-    """The same notes as the score, as a timeline the browser can play.
+def _playback(parts, length, chapters, marks):
+    """The same notes as the score, as a timeline in seconds the browser can play.
 
-    Times are in quarter notes from the start, so the page only needs the tempo
-    to turn them into seconds. Tied notes become one long note, the way a player
-    would hold them, and dynamics become velocities. A section's solo passage
-    goes on a track of its own, played with the solo instrument's sample.
+    Each chapter runs at its own tempo. Tied notes become one long note, the way
+    a player would hold them, and dynamics become velocities. A solo passage of
+    an instrument that normally plays as a section goes on a track of its own,
+    played with the solo instrument's sample.
 
     The ending is performed rather than just played: the tempo falls on the way
     to the final chord, and the chord then sounds for a length chosen in seconds
-    whatever its written value. `anchors` maps score time to playing time
-    through that stretch so the cursor can follow, and `fade` says when the last
-    chord dies away.
+    whatever its written value. `anchors` maps score time (quarter notes) to
+    playing time (seconds) so the cursor can follow every change of tempo, and
+    `fade` says when the last chord dies away.
     """
     ending = marks["ending"]
     total = len(parts[0][1]) * length
-    slowing, struck = marks["slow_from"] * length, marks["struck"] * length
+    # Where each chapter starts, in divisions, how long a division lasts there,
+    # and the clock time it starts at.
+    starts = [chapter["first"] * length for chapter in chapters]
+    rates = [60 / (chapter["tempo"].bpm * DIVISIONS) for chapter in chapters]
+    clock = [0.0]
+    for index in range(1, len(chapters)):
+        clock.append(clock[-1] + (starts[index] - starts[index - 1]) * rates[index - 1])
+
+    def steady(time):
+        """Score time -> seconds, each chapter at its own tempo."""
+        index = max(i for i, start in enumerate(starts) if start <= time)
+        return clock[index] + (time - starts[index]) * rates[index]
+
+    # The ending happens inside the last chapter, at its tempo.
+    rate = rates[-1]
+    slowing = max(marks["slow_from"] * length, starts[-1])
+    struck = max(marks["struck"] * length, slowing)
     drop = 1 - ending.slow_to
-    # How much the final chord's measures stretch: slowed like the approach,
-    # then pulled inside the range the ending allows.
-    seconds = 60 / (tempo.bpm * DIVISIONS)
     shortest, longest = ending.chord
-    written = (total - struck) * seconds
+    written = (total - struck) * rate
     chord = min(max(written / ending.slow_to, shortest), longest) / written
 
     def played(time):
-        """Score time -> playing time, in divisions. The tempo falls in a straight
-        line from full at `slowing` to `slow_to` as the final chord is struck."""
+        """Score time -> seconds, with the ending performed. The tempo falls in a
+        straight line from full at `slowing` to `slow_to` as the final chord is
+        struck; the chord's measures then stretch to the length chosen."""
         if time <= slowing:
-            return time
+            return steady(time)
         span = struck - slowing
         approach = min(time, struck) - slowing
-        arrived = slowing + (span / drop * math.log(1 / (1 - drop * approach / span)) if span else 0)
-        return arrived + max(0, time - struck) * chord
-
-    def quarters(time):
-        return round(time / DIVISIONS, 3)
+        arrived = steady(slowing) + (span / drop * math.log(1 / (1 - drop * approach / span)) if span else 0) * rate
+        return arrived + max(0, time - struck) * chord * rate
 
     tracks = []
     for part, bars in parts:
-        alone = part is marks["lead"] and part.sound != part.instrument.sound
+        alone = marks["solo"].get(part.instrument.id, set()) if part.sound != part.instrument.sound else set()
         notes, solo, holding, velocity = [], [], {}, VELOCITIES["mf"]
         for index, events in enumerate(bars):
             at = index * length
-            target = solo if alone and index in marks["solo"] else notes
+            target = solo if index in alone else notes
             for event in events:
                 if event.dynamic:
                     velocity = VELOCITIES[event.dynamic]
@@ -583,22 +648,20 @@ def _playback(parts, length, tempo, marks):
             if timeline:
                 tracks.append({
                     "sound": sound,
-                    "notes": [
-                        [quarters(played(start)), quarters(played(start + size) - played(start)), midi, loud]
-                        for start, size, midi, loud in timeline
-                    ],
+                    "notes": [[round(played(start), 3), round(played(start + size) - played(start), 3), midi, loud]
+                              for start, size, midi, loud in timeline],
                 })
 
-    finish = played(total)
+    end = played(total)
     share, level = ending.fade
+    points = sorted({0, total, *starts, *range(slowing, total + 1, DIVISIONS // 2)})
     return {
-        "bpm": tempo.bpm,
-        "quarters": quarters(finish),
+        "end": round(end, 3),
         "tracks": tracks,
-        "anchors": [[quarters(time), quarters(played(time))]
-                    for time in range(slowing, total + 1, DIVISIONS // 2)],
+        "anchors": [[round(time / DIVISIONS, 3), round(played(time), 3)] for time in points],
+        "chapters": [round(played(start), 3) for start in starts],
         # A held chord does not stay at full strength: it dies away to `level`.
-        "fade": [quarters(played(struck) + share * (finish - played(struck))), quarters(finish), level],
+        "fade": [round(played(struck) + share * (end - played(struck)), 3), round(end, 3), level],
     }
 
 
@@ -691,9 +754,25 @@ def _notes(event, octave, fermata=False):
     return "".join(out)
 
 
-def _write(title, parts, key, time, request, marks):
-    fifths, mode = orchestra.KEY_BY_LABEL[key]
+NUMERALS = "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ"
+
+
+def _key(label):
+    fifths, mode = orchestra.KEY_BY_LABEL[label]
+    return f"<key><fifths>{fifths}</fifths><mode>{mode}</mode></key>"
+
+
+def _above(text, style):
+    return (
+        f'<direction placement="above"><direction-type><words {style}>{escape(text)}'
+        "</words></direction-type></direction>"
+    )
+
+
+def _write(title, parts, time, chapters, marks):
     beats, beat_type = TIME_SIGNATURES[time]
+    # Measures where a chapter begins, and the chapter that begins there.
+    opening = {chapter["first"]: (number, chapter) for number, chapter in enumerate(chapters)}
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -715,31 +794,32 @@ def _write(title, parts, key, time, request, marks):
             if instrument.octave else ""
         )
         for number, events in enumerate(bars, 1):
+            at = number - 1
             lines.append(f'<measure number="{number}">')
-            if number == 1:
+            if at == 0:
                 lines.append(
-                    f"<attributes><divisions>{DIVISIONS}</divisions>"
-                    f"<key><fifths>{fifths}</fifths><mode>{mode}</mode></key>"
+                    f"<attributes><divisions>{DIVISIONS}</divisions>{_key(chapters[0]['key'])}"
                     f"<time><beats>{beats}</beats><beat-type>{beat_type}</beat-type></time>"
                     f"<clef><sign>{sign}</sign><line>{line}</line></clef>{transpose}</attributes>"
                 )
+            if at in opening:
+                count, chapter = opening[at]
+                if count and chapter["key"] != chapters[count - 1]["key"]:
+                    lines.append(f"<attributes>{_key(chapter['key'])}</attributes>")
                 if index == 0:
-                    lines.append(_tempo(request.tempo, beat_type))
-            if index == 0 and number - 1 in marks["rehearsal"]:
+                    name = str(chapter["plan"].get("title") or "").strip()
+                    if len(chapters) > 1 and name:
+                        lines.append(_above(f"{NUMERALS[count % len(NUMERALS)]}. {name}", 'font-weight="bold"'))
+                    lines.append(_tempo(chapter["tempo"], beat_type))
+            if index == 0 and at in marks["rehearsal"]:
                 lines.append(
                     '<direction placement="above"><direction-type><rehearsal>'
-                    f'{escape(marks["rehearsal"][number - 1])}</rehearsal></direction-type></direction>'
+                    f'{escape(marks["rehearsal"][at])}</rehearsal></direction-type></direction>'
                 )
-            if index == 0 and number - 1 in marks["top"]:
-                lines.append(
-                    '<direction placement="above"><direction-type><words font-style="italic">'
-                    f'{marks["top"][number - 1]}</words></direction-type></direction>'
-                )
-            if part is marks["lead"] and number - 1 in marks["words"]:
-                lines.append(
-                    '<direction placement="above"><direction-type><words font-style="italic">'
-                    f'{marks["words"][number - 1]}</words></direction-type></direction>'
-                )
+            if index == 0 and at in marks["top"]:
+                lines.append(_above(marks["top"][at], 'font-style="italic"'))
+            if (instrument.id, at) in marks["words"]:
+                lines.append(_above(marks["words"][(instrument.id, at)], 'font-style="italic"'))
             for event in events:
                 if event.dynamic:
                     lines.append(
@@ -751,6 +831,9 @@ def _write(title, parts, key, time, request, marks):
                 lines.append(_notes(event, instrument.octave, last and marks["ending"].fermata))
             if number == len(bars):
                 lines.append('<barline location="right"><bar-style>light-heavy</bar-style></barline>')
+            elif number in opening:
+                # A double bar where the next chapter begins.
+                lines.append('<barline location="right"><bar-style>light-light</bar-style></barline>')
             lines.append("</measure>")
         lines.append("</part>")
 
