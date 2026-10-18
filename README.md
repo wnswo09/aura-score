@@ -3,7 +3,7 @@
 악기 구성과 분위기, 템포를 고르면 GPT 가 오케스트라 총보를 써 주는 앱.
 
 - **악보 생성**: OpenAI `gpt-6-sol` (Responses API, Structured Outputs). `.env` 에서 바꿀 수 있습니다.
-- **악보 표시**: OpenSheetMusicDisplay 2.1.3, MusicXML 다운로드
+- **악보 표시**: OpenSheetMusicDisplay 2.1.3, PDF 저장(A4), MusicXML 다운로드
 - **재생**: smplr 1.0 + General MIDI 사운드폰트(MusyngKite), 악보 위 커서가 따라감
 - **로그인**: Firebase Authentication, 이메일/비밀번호
 - **내 악보**: 만든 곡은 끝나는 대로 Firestore 에 저장되고, 다시 열어 보고 재생하고 지울 수 있습니다
@@ -171,6 +171,13 @@ zlib 압축)과 입력한 폼입니다. 5분짜리 곡의 MusicXML 은 472KB 로
 목록은 단일 필드 정렬이라 복합 색인이 필요 없습니다. 목록 쿼리는 원본을 빼고 요약 필드만 읽습니다.
 저장에 실패해도 곡은 화면에 보여 주고, 저장하지 못한 이유를 알려 줍니다.
 
+**PDF 저장.** 브라우저 안에서 만듭니다 (`static/js/pdf.js`). 화면 밖에 OSMD 를 하나 더 띄워 악보를
+A4 세로 쪽으로 나누고, 쪽마다 300dpi(2480×3507) 이미지로 그려 jsPDF 로 묶은 뒤 쪽 번호를 답니다.
+벡터 대신 이미지로 넣는 이유: 음표와 기호는 전부 SVG 도형이라 문제없지만, 제목과 장 제목이 한글이라
+jsPDF 기본 폰트로는 그릴 수 없고, 한글 폰트를 심으면 파일마다 몇 MB 가 늘어납니다. 이미지로 넣으면 화면과
+똑같이 인쇄됩니다. jsPDF(400KB)는 처음 누를 때만 불러옵니다. 10파트 이상 총보는 실제 출판 악보처럼 한 쪽에 한 줄
+(4~5마디)이 들어가서, 5분짜리 15파트 곡이 23쪽, 만드는 데 약 15초, 쪽당 약 170KB 입니다.
+
 **로그인.** 이메일/비밀번호 인증은 브라우저의 Firebase Web SDK 만 할 수 있습니다.
 브라우저는 ID 토큰을 받아 `/api/session` 에 넘긴 뒤 바로 로그아웃하고, 서버가 Admin SDK 로
 토큰을 한 번 검증해 Flask 세션 쿠키로 바꿉니다. 쿠키 이름은 `aura_score_session` 입니다.
@@ -193,7 +200,8 @@ musicxml.py          마디 문자열 파싱, 자동 수정, 장 조립(조표·
 firebase_setup.py    Firebase 초기화, 토큰 검증, Firestore 클라이언트, 남은 설정 안내.
 static/js/auth.js    Firebase 이메일/비밀번호 인증 → Flask 세션 인계.
 static/js/compose.js 두 폼의 입력 처리, 생성 작업 시작과 진행 표시.
-static/js/score_view.js 완성된 곡 보여 주기(장별 설계, 악보, 재생 버튼, 다운로드). 작곡 페이지와 저장된 곡 페이지가 같이 씁니다.
+static/js/score_view.js 완성된 곡 보여 주기(장별 설계, 악보, 재생 버튼, PDF·MusicXML 저장). 작곡 페이지와 저장된 곡 페이지가 같이 씁니다.
+static/js/pdf.js     A4 쪽 배치 → 쪽마다 300dpi 이미지 → jsPDF 로 PDF 만들어 내려받기.
 static/js/player.js  사운드폰트 재생, 커서 동기화, 정지.
 ```
 

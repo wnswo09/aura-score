@@ -1,9 +1,10 @@
-/* Showing a finished score: what GPT planned, the score itself, playback and
- * download. Used by the compose page when a piece is done and by the page of a
+/* Showing a finished score: what GPT planned, the score itself, playback, and
+ * saving it as PDF or MusicXML. Used by the compose page when a piece is done and by the page of a
  * saved piece. Both pages include templates/compose/result.html and load
  * OpenSheetMusicDisplay as a global before this module.
  */
 
+import { savePdf } from "./pdf.js";
 import { Player } from "./player.js";
 
 const result = document.getElementById("result");
@@ -17,7 +18,18 @@ let player = null;
 let current = null;
 
 const playButton = document.getElementById("play");
-const playError = document.getElementById("play-error");
+const pdfButton = document.getElementById("pdf");
+const problem = document.getElementById("score-error");
+
+function complain(failure) {
+  problem.textContent = failure.message;
+  problem.hidden = false;
+}
+
+/** The title as a file name: without the characters file systems refuse. */
+function filename(title) {
+  return title.replace(/[\\/:*?"<>|]/g, "").trim() || "score";
+}
 
 function showPlayer(state, { loaded, total } = {}) {
   playButton.textContent = {
@@ -29,12 +41,26 @@ function showPlayer(state, { loaded, total } = {}) {
 
 playButton.addEventListener("click", () => {
   if (!player || !current) return;
-  playError.hidden = true;
+  problem.hidden = true;
   if (player.state !== "idle") return player.stop();
-  player.play(current.playback).catch((failure) => {
-    playError.textContent = failure.message;
-    playError.hidden = false;
-  });
+  player.play(current.playback).catch(complain);
+});
+
+pdfButton.addEventListener("click", async () => {
+  if (!current || pdfButton.disabled) return;
+  problem.hidden = true;
+  pdfButton.disabled = true;
+  pdfButton.textContent = "PDF 준비 중…";
+  try {
+    await savePdf(current.musicxml, filename(current.title), (page, pages) => {
+      pdfButton.textContent = `PDF 만드는 중… ${page}/${pages}`;
+    });
+  } catch (failure) {
+    complain(failure);
+  } finally {
+    pdfButton.disabled = false;
+    pdfButton.textContent = "PDF 저장";
+  }
 });
 
 /** One section of GPT's plan: where it is, what it is for, and what is new in it.
@@ -123,7 +149,7 @@ document.getElementById("download").addEventListener("click", () => {
   const blob = new Blob([current.musicxml], { type: "application/vnd.recordare.musicxml+xml" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `${current.title.replace(/[\\/:*?"<>|]/g, "").trim() || "score"}.musicxml`;
+  link.download = `${filename(current.title)}.musicxml`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 });
