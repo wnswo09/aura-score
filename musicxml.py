@@ -346,20 +346,24 @@ def _place(chapters, spans):
     chapters[:] = [chapter for chapter in chapters if chapter["first"] is not None]
 
 
-def build(plan, request):
-    """The plan, with each chapter's music attached as chapter["music"], plus the
-    request it answered -> the page's score payload.
-
-    Raises ValueError when there is nothing worth showing.
-    """
+def home_and_time(plan, request):
     home = plan.get("key") if plan.get("key") in orchestra.KEY_BY_LABEL else request.key or "C major"
     time = plan.get("time_signature")
     if time not in TIME_SIGNATURES:
         time = request.time or "4/4"
-    length = measure_length(time)
+    return home, time
 
-    # GPT writes chapter by chapter and section by section; the score needs each
-    # instrument end to end.
+
+def assemble(plan, request):
+    """Every instrument's measure strings end to end, with the user's edits laid
+    over them. Returns (chapters, spans, {instrument: [measure, ...]}, repairs).
+
+    GPT writes chapter by chapter and section by section; the score needs each
+    instrument end to end. Edits (see editing in score_service) are kept apart
+    from what GPT first wrote, as a list applied in order, so undoing one is just
+    dropping it.
+    """
+    home, _time = home_and_time(plan, request)
     chapters, spans, repairs = _layout(plan)
     if not spans:
         raise ValueError("GPT 가 곡을 설계하지 못했습니다. 다시 시도해 주세요.")
@@ -375,6 +379,25 @@ def build(plan, request):
             measures = given.get(instrument, [])
             repairs += len(measures) != bars
             line += (measures + ["R"] * bars)[:bars]
+    for edit in plan.get("edits") or []:
+        for part in edit.get("parts") or []:
+            line = written.get(part.get("instrument"))
+            for offset, text in enumerate(part.get("measures") or []):
+                index = int(edit.get("from", 1)) - 1 + offset
+                if line is not None and 0 <= index < len(line):
+                    line[index] = str(text)
+    return chapters, spans, written, repairs
+
+
+def build(plan, request):
+    """The plan, with each chapter's music attached as chapter["music"], plus the
+    request it answered -> the page's score payload.
+
+    Raises ValueError when there is nothing worth showing.
+    """
+    home, time = home_and_time(plan, request)
+    length = measure_length(time)
+    chapters, spans, written, repairs = assemble(plan, request)
 
     notes, parts = 0, []
     for part in request.parts:
@@ -422,6 +445,10 @@ def build(plan, request):
         "measures": total,
         "duration": round(playback["end"]),
         "lead": lead.instrument.ko,
+        # Score order, so the page can name what was selected on it.
+        "parts": [{"id": part.instrument.id, "name": part.instrument.ko} for part, _bars in parts],
+        "edits": [{key: edit.get(key) for key in ("from", "to", "wish", "change")}
+                  for edit in plan.get("edits") or []],
         "ending": ending.label,
         "chapters": _chapter_cards(chapters, flow, playback, time),
         "repairs": repairs,

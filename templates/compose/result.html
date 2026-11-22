@@ -15,5 +15,43 @@
   <div class="chapters" id="score-flow"></div>
   <p class="hint" id="score-repetition"></p>
   <p class="hint" id="score-repairs" hidden></p>
+
+  <div class="edits" id="edits" hidden>
+    <p class="edit-guide" id="edit-guide">
+      <b>악보 고치기</b> 악보 위에 마우스를 올리면 한 줄씩 <span class="ask">이 부분?</span> 하고 물어봅니다. 클릭하면 그 줄이 골라지고,
+      드래그하면 여러 마디·여러 파트를 한꺼번에 고를 수 있습니다. 고른 다음 어떻게 바꿀지 적어 주세요.
+    </p>
+    <div class="edit-last" id="edit-last" hidden>
+      <div>
+        <b>최근 수정</b> <span id="edit-last-where"></span>
+        <p id="edit-last-change"></p>
+      </div>
+      <button class="btn" id="edit-undo" type="button">되돌리기</button>
+    </div>
+  </div>
+
   <div class="paper"><div id="score"></div></div>
+
+  <form class="edit-panel" id="edit-panel" hidden>
+    <div class="edit-panel-head">
+      <b id="edit-where"></b>
+      <button class="edit-close" id="edit-cancel" type="button" aria-label="선택 취소">✕</button>
+    </div>
+    <textarea id="edit-wish" rows="2" maxlength="300"
+              placeholder="어떻게 바꿀까요? 예: 더 서정적으로, 리듬을 단순하게, 마지막 마디는 크레센도로"></textarea>
+    <div class="chips" id="edit-ideas">
+      <button class="chip" type="button">더 서정적으로</button>
+      <button class="chip" type="button">더 힘차게</button>
+      <button class="chip" type="button">리듬을 단순하게</button>
+      <button class="chip" type="button">더 화려하게</button>
+      <button class="chip" type="button">음을 더 적게, 여유 있게</button>
+    </div>
+    <div class="edit-panel-foot">
+      <span class="edit-status" id="edit-status"></span>
+      <span class="edit-buttons">
+        <button class="btn" id="edit-panel-undo" type="button" hidden>되돌리기</button>
+        <button class="btn primary" id="edit-submit" type="submit">이 부분 고치기</button>
+      </span>
+    </div>
+  </form>
 </section>

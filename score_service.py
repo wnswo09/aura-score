@@ -33,6 +33,9 @@ PLAN_EFFORT = "high"
 CHAPTER_EFFORT = "medium"
 PLAN_TOKENS = 40000
 CHAPTER_TOKENS = 60000
+EDIT_TOKENS = 30000
+# The most measures one edit may rewrite. Past this a request is a new piece.
+MAX_EDIT_MEASURES = 24
 SOLO_TOKENS = 30000
 MAX_SOLOS = 4
 TIMEOUT_SECONDS = 600
@@ -183,6 +186,43 @@ def _compose_solo(request, plan, index, number):
         except ScoreServiceError as error:
             log.warning("solo rewrite failed, keeping the first version: %s", error)
     return _fill(request, written, bars), usages, (first, kept)
+
+
+def check_edit(request, plan, first, last, chosen):
+    """Refuse an edit that does not fit this score, with a sentence for the page."""
+    _chapters, _spans, written, _repairs = musicxml.assemble(plan, request)
+    total = len(next(iter(written.values())))
+    if not 1 <= first <= last <= total:
+        raise ValueError(f"고를 수 있는 마디는 1~{total} 입니다.")
+    if last - first + 1 > MAX_EDIT_MEASURES:
+        raise ValueError(f"한 번에 {MAX_EDIT_MEASURES}마디까지 고칠 수 있습니다. 구간을 나눠서 고쳐 주세요.")
+    playing = {part.instrument.id for part in request.parts}
+    if not chosen or any(instrument not in playing for instrument in chosen):
+        raise ValueError("고칠 악기를 알아볼 수 없습니다. 악보를 다시 선택해 주세요.")
+
+
+def revise(request, plan, first, last, chosen, wish):
+    """Rewrite measures first..last of the chosen instruments as asked.
+    Returns the edit, ready to append to plan["edits"]."""
+    bars = last - first + 1
+    written, _usage = _respond(
+        "orchestral_edit", prompts.EDIT, prompts.edit_brief(request, plan, first, last, chosen, wish),
+        prompts.edit_schema(chosen), os.environ.get("OPENAI_EDIT_EFFORT") or CHAPTER_EFFORT, EDIT_TOKENS,
+    )
+    given = {}
+    for part in written.get("parts") or []:
+        if isinstance(part, dict) and part.get("instrument") in chosen and part.get("instrument") not in given:
+            given[part["instrument"]] = [str(m) for m in part.get("measures") or []]
+    if not given:
+        raise ScoreServiceError("GPT 가 고친 마디를 돌려주지 않았습니다. 다시 시도해 주세요.")
+    return {
+        "from": first,
+        "to": last,
+        "wish": wish,
+        "change": str(written.get("change") or "").strip()[:200],
+        # An instrument GPT left out keeps what it had; a short answer keeps the rest.
+        "parts": [{"instrument": instrument, "measures": measures[:bars]} for instrument, measures in given.items()],
+    }
 
 
 def _write(request, plan, index):

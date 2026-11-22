@@ -28,6 +28,7 @@ from flask import (
 import firebase_setup
 import jobs
 import library
+import musicxml
 import orchestra
 import score_service
 
@@ -143,6 +144,9 @@ def api_score_status(job_id):
 
 # ---------------------------------------------------------------- my scores
 
+EDIT_WISH_MAX = 300
+
+
 @app.template_filter("clock")
 def clock(seconds):
     """302 -> "5분 2초"."""
@@ -181,6 +185,70 @@ def api_saved_score(score_id):
     if score is None:
         return jsonify({"error": "이 악보를 찾을 수 없습니다."}), 404
     return jsonify(score)
+
+
+@app.route("/api/library/<score_id>/edit", methods=["POST"])
+@login_required
+def api_edit_score(score_id):
+    """Rewrite some measures of some instruments as the person asked. Answers at
+    once with a job id, like writing a piece; the job returns the whole score."""
+    payload = request.get_json(silent=True) or {}
+    uid = current_user()["uid"]
+    wish = str(payload.get("wish", "")).strip()[:EDIT_WISH_MAX]
+    if not wish:
+        return jsonify({"error": "어떻게 고칠지 적어 주세요."}), 400
+    try:
+        found = library.load(uid, score_id)
+    except firebase_setup.FirebaseError as failure:
+        return jsonify({"error": str(failure)}), 503
+    if found is None:
+        return jsonify({"error": "이 악보를 찾을 수 없습니다."}), 404
+    plan, brief, created = found
+    try:
+        first, last = int(payload.get("from")), int(payload.get("to"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "고칠 구간을 알아볼 수 없습니다. 악보를 다시 선택해 주세요."}), 400
+    chosen = [str(instrument) for instrument in payload.get("parts") or []]
+    try:
+        score_service.check_edit(brief, plan, first, last, chosen)
+    except ValueError as failure:
+        return jsonify({"error": str(failure)}), 400
+
+    def work(progress):
+        progress("고르신 부분을 다시 쓰는 중")
+        edit = score_service.revise(brief, plan, first, last, chosen, wish)
+        plan.setdefault("edits", []).append(edit)
+        score = musicxml.build(plan, brief)
+        progress("내 악보에 저장하는 중")
+        try:
+            library.keep(uid, score_id, plan, score)
+        except firebase_setup.FirebaseError as failure:
+            score["save_error"] = str(failure)
+        return {**score, "id": score_id, "created": created}
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"error": "OPENAI_API_KEY 가 없어 고칠 수 없습니다."}), 503
+    return jsonify({"job": jobs.start(uid, work, score_service.ScoreServiceError)}), 202
+
+
+@app.route("/api/library/<score_id>/undo", methods=["POST"])
+@login_required
+def api_undo_edit(score_id):
+    """Drop the last edit and hand back the score as it was before it."""
+    uid = current_user()["uid"]
+    try:
+        found = library.load(uid, score_id)
+        if found is None:
+            return jsonify({"error": "이 악보를 찾을 수 없습니다."}), 404
+        plan, brief, created = found
+        if not plan.get("edits"):
+            return jsonify({"error": "되돌릴 수정이 없습니다."}), 400
+        plan["edits"].pop()
+        score = musicxml.build(plan, brief)
+        library.keep(uid, score_id, plan, score)
+    except firebase_setup.FirebaseError as failure:
+        return jsonify({"error": str(failure)}), 503
+    return jsonify({**score, "id": score_id, "created": created})
 
 
 @app.route("/scores/<score_id>/delete", methods=["POST"])

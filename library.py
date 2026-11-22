@@ -10,8 +10,10 @@ musicxml.build, so fixes to the score writer reach old pieces too.
         title, description, summary, created_at, duration, measures, chapters,
         key, time, lead, ending, mode, minutes,
         request   the form as submitted (only the fields the forms send)
-        source    the plan with the music, as zlib-compressed JSON
+        source    the plan with the music, as zlib-compressed JSON; the user's
+                  edits ride along in it as plan["edits"]
         format    how `source` is laid out, for when that changes
+        edits, updated_at   how many edits it carries, and when the last was made
 
 One collection per user keeps listing to a single-field order, so Firestore
 needs no composite index, and a user can only ever reach their own scores.
@@ -97,9 +99,9 @@ def listing(uid):
     return [{**fields, "id": score_id, "created": _when(fields.get("created_at"))} for score_id, fields in found]
 
 
-def open_score(uid, score_id):
-    """A saved piece rebuilt into the page's score payload, or None if this
-    user has no such score. Raises ValueError if it can no longer be rebuilt."""
+def load(uid, score_id):
+    """(plan, request, created) for a saved piece, or None if this user has no
+    such score."""
     try:
         snapshot = _scores(uid).document(score_id).get()
     except Exception as error:
@@ -108,8 +110,31 @@ def open_score(uid, score_id):
         return None
     saved = snapshot.to_dict()
     plan = json.loads(zlib.decompress(saved["source"]).decode("utf-8"))
-    score = musicxml.build(plan, orchestra.read_request(saved["request"]))
-    return {**score, "id": score_id, "created": _when(saved.get("created_at"))}
+    return plan, orchestra.read_request(saved["request"]), _when(saved.get("created_at"))
+
+
+def open_score(uid, score_id):
+    """A saved piece rebuilt into the page's score payload, or None if this
+    user has no such score. Raises ValueError if it can no longer be rebuilt."""
+    found = load(uid, score_id)
+    if found is None:
+        return None
+    plan, request, created = found
+    return {**musicxml.build(plan, request), "id": score_id, "created": created}
+
+
+def keep(uid, score_id, plan, score):
+    """Store a piece's plan again after an edit or an undo."""
+    try:
+        _scores(uid).document(score_id).update({
+            "source": zlib.compress(json.dumps(plan, ensure_ascii=False).encode("utf-8")),
+            "duration": score["duration"],
+            "measures": score["measures"],
+            "edits": len(plan.get("edits") or []),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+    except Exception as error:
+        raise firebase_setup.friendly(error) from error
 
 
 def delete(uid, score_id):

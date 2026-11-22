@@ -255,6 +255,45 @@ afterwards. You write a full score in C: every part at concert (sounding) pitch.
 """
 
 
+EDIT = f"""\
+You are an orchestral composer revising a passage of your own score at the
+request of the person you wrote it for. Change only what you are asked to
+change: the selected instruments in the selected measures. Everything else in
+the score stays exactly as it is, so the new measures have to fit around it: the
+harmony the other parts make in those bars, the same key and meter, and a smooth
+join to the measure before and the measure after. You write at concert pitch.
+
+## Output
+- change: one sentence in Korean telling the person, in plain words, what you
+  changed.
+- parts: one entry per selected instrument, each with exactly the selected
+  number of measures.
+
+{NOTATION}
+## Hard rules
+1. The durations in every measure add up to exactly one bar: 4/4 = one whole
+   note, 3/4 = 2., 2/4 = 2, 6/8 = 2. (six eighths). Count every measure.
+2. Stay inside each part's range and never exceed its number of simultaneous notes.
+3. No tuplets, grace notes, or anything else not described above.
+4. Exactly the selected number of measures for each selected instrument.
+
+## Revising
+- Do what the request asks, as fully as the selected bars allow. If part of it
+  cannot be done within the rules (a note out of range, say), do the nearest
+  thing and say so in change.
+- Keep what the request does not touch. Asked for a different rhythm, keep the
+  line's direction and harmony; asked for it louder, keep the notes.
+- The other instruments are not changing. Fit the harmony they make in each bar,
+  and do not collide with a melody another instrument plays there unless asked.
+- Join up: the first new measure follows on from the measure before it, and the
+  last leads into the measure after.
+- A melody stays singable: mostly steps, no tritone or seventh leaps, a breath
+  between phrases.
+- Mark a dynamic on the first new measure when the level there should differ
+  from what comes before.
+"""
+
+
 # ---------------------------------------------------------------- briefs
 
 def _note_name(midi):
@@ -416,6 +455,45 @@ def solo_brief(request, plan, index, number):
     return "\n".join(lines)
 
 
+def edit_brief(request, plan, first, last, chosen, wish):
+    """The brief for rewriting measures first..last of the `chosen` instruments.
+    Shows those bars and two either side, for every instrument, as they are now."""
+    import musicxml  # here, not at the top: musicxml already imports this module's neighbours
+
+    _home, time = musicxml.home_and_time(plan, request)
+    chapters, spans, written, _repairs = musicxml.assemble(plan, request)
+    total = len(next(iter(written.values())))
+    shown = range(max(1, first - 2), min(total, last + 2) + 1)
+    names = {part.instrument.id: part.name for part in request.parts}
+
+    def chapter_of(measure):
+        return next(span[4] for span in spans if span[2] < measure <= span[2] + span[3])
+
+    involved = sorted({chapter_of(measure) for measure in range(first, last + 1)})
+    lines = [
+        f"Rewrite measures {first}-{last} for: " + ", ".join(f"{i} ({names[i]})" for i in chosen) + ".",
+        f"The request, in the person's words: {wish}",
+        "",
+        f"The piece: {plan.get('title')}. Home key {plan.get('key')}, time signature {time}.",
+    ]
+    for index in involved:
+        chapter = chapters[index]
+        lines.append(f"These bars are in chapter {index + 1}, \"{chapter['plan'].get('title')}\": "
+                     f"{chapter['tempo'].term}, quarter = {chapter['tempo'].bpm}, {chapter['key']}.")
+    for section, _music, start, bars, _chapter in spans:
+        if start < last and start + bars >= first:
+            lines.append(f"Measures {start + 1}-{start + bars}: " + _section_line(section)[2:])
+    lines += _character(request)
+    lines += ["", f"Measures {shown.start}-{shown.stop - 1} as they are now. Bars marked * are the ones "
+                  "to rewrite; everything else stays:"]
+    for instrument, line in written.items():
+        mine = instrument in chosen
+        bars = [f"{'*' if mine and first <= m <= last else ''}m{m}: {line[m - 1]}" for m in shown]
+        lines.append(f"- {instrument} ({names[instrument]}): " + " | ".join(bars))
+    lines += [""] + _parts(request)
+    return "\n".join(lines)
+
+
 def solo_revision(brief, written, issues):
     """The same brief again, with the first attempt and what is wrong with it."""
     shown = "\n".join(f"- {part['instrument']}: " + " | ".join(part["measures"]) for part in written["parts"])
@@ -501,6 +579,14 @@ def solo_schema(request):
         "shape": TEXT,
         "parts": {"type": "array", "items": part},
     })
+
+
+def edit_schema(chosen):
+    part = _record({
+        "instrument": _choice(chosen),
+        "measures": {"type": "array", "items": TEXT},
+    })
+    return _record({"change": TEXT, "parts": {"type": "array", "items": part}})
 
 
 def chapter_schema(request):

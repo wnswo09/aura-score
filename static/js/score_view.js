@@ -1,9 +1,10 @@
-/* Showing a finished score: what GPT planned, the score itself, playback, and
- * saving it as PDF or MusicXML. Used by the compose page when a piece is done and by the page of a
+/* Showing a finished score: what GPT planned, the score itself, playback,
+ * saving it as PDF or MusicXML, and choosing parts of it for GPT to rewrite (edit.js). Used by the compose page when a piece is done and by the page of a
  * saved piece. Both pages include templates/compose/result.html and load
  * OpenSheetMusicDisplay as a global before this module.
  */
 
+import { editing } from "./edit.js";
 import { savePdf } from "./pdf.js";
 import { Player } from "./player.js";
 
@@ -101,7 +102,9 @@ function chapterBlock(chapter) {
   return block;
 }
 
-export async function showScore(score) {
+/** Draw a score. `stay` keeps the page where it is, for an edited score
+ * replacing the one the reader is looking at. */
+export async function showScore(score, { stay = false } = {}) {
   player?.stop();
   current = score;
   document.getElementById("score-title").textContent = score.title;
@@ -141,7 +144,8 @@ export async function showScore(score) {
   } catch (failure) {
     throw new Error(`악보를 그리지 못했습니다: ${failure.message}. MusicXML 다운로드는 가능합니다.`);
   }
-  result.scrollIntoView({ behavior: "smooth", block: "start" });
+  editing(osmd, document.querySelector("#result .paper"), score, (edited) => showScore(edited, { stay: true }));
+  if (!stay) result.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 document.getElementById("download").addEventListener("click", () => {
