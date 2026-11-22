@@ -108,7 +108,8 @@ def _rests(amount):
 def parse_measure(text, length):
     """One measure string -> (events filling exactly `length`, repairs made)."""
     tokens = str(text).split()
-    if not tokens or tokens == ["R"]:
+    # "R", and "@p R": a dynamic before a whole-measure rest has nothing to act on.
+    if [token for token in tokens if not token.startswith("@")] in ([], ["R"]):
         return [Event([], length)], 0
 
     events, repairs, used, dynamic = [], 0, 0, ""
@@ -283,6 +284,9 @@ def _layout(plan):
             repairs += bars != wanted
             if bars:
                 notes = music[index] if index < len(music) and isinstance(music[index], dict) else {}
+                if isinstance(section.get("solo_music"), list):
+                    # Composed on its own (see score_service._compose_solo); the chapter left rests here.
+                    notes = {"parts": section["solo_music"]}
                 spans.append([section, notes, at, bars, len(chapters)])
                 at += bars
         if at > first:
@@ -461,7 +465,7 @@ def _flow(spans, playing):
             "mark": _letter(number),
             "name": str(entry.get("name") or "").strip()[:12],
             "role": orchestra.ROLES.get(entry.get("role"), ""),
-            "solo": entry.get("role") == "solo",
+            "solo": entry.get("role") == "solo" or entry.get("texture") == "solo",
             "from": first + 1,
             "to": first + bars,
             "melody": melody.instrument.ko if melody else "",
@@ -569,6 +573,26 @@ def _repetition(parts):
 # MIDI velocity for each dynamic. Parts start at mf until told otherwise.
 VELOCITIES = {"ppp": 28, "pp": 38, "p": 50, "mp": 64, "mf": 78, "f": 94, "ff": 108, "fff": 120}
 ACCENT = 15
+# Under a slur each note runs a 32nd into the next, so the samples join instead
+# of each starting from silence.
+LEGATO = 1
+# A soloist plays a little above the marked level, and shapes each phrase:
+# louder toward its highest note, softer as it settles.
+SOLO_LIFT = 6
+SWELL, SETTLE = 12, 8
+
+
+def _shape(phrase):
+    """Swell a solo phrase toward its highest note and let it fall away after."""
+    if len(phrase) < 3:
+        return
+    peak = max(range(len(phrase)), key=lambda index: phrase[index][2])
+    for index, note in enumerate(phrase):
+        if index <= peak:
+            lift = SWELL * index / peak if peak else SWELL
+        else:
+            lift = SWELL - (SWELL + SETTLE) * (index - peak) / max(len(phrase) - 1 - peak, 1)
+        note[3] = max(1, min(127, round(note[3] + lift)))
 
 
 def _playback(parts, length, chapters, marks):
@@ -622,17 +646,20 @@ def _playback(parts, length, chapters, marks):
 
     tracks = []
     for part, bars in parts:
-        alone = marks["solo"].get(part.instrument.id, set()) if part.sound != part.instrument.sound else set()
+        soloing = marks["solo"].get(part.instrument.id, set())
+        alone = soloing if part.sound != part.instrument.sound else set()
         notes, solo, holding, velocity = [], [], {}, VELOCITIES["mf"]
+        slurred, phrase = False, []
         for index, events in enumerate(bars):
             at = index * length
             target = solo if index in alone else notes
             for event in events:
                 if event.dynamic:
                     velocity = VELOCITIES[event.dynamic]
-                sounding = event.duration / 2 if event.staccato else event.duration
-                loud = min(127, velocity + (ACCENT if event.accent else 0))
-                tied = {}
+                legato = (slurred or event.slur_start) and not event.slur_stop and not event.staccato
+                sounding = event.duration / 2 if event.staccato else event.duration + (LEGATO if legato else 0)
+                loud = min(127, velocity + (ACCENT if event.accent else 0) + (SOLO_LIFT if index in soloing else 0))
+                tied, fresh = {}, []
                 for pitch in event.pitches:
                     if event.tie_stop and pitch.midi in holding:
                         note = holding[pitch.midi]
@@ -640,10 +667,21 @@ def _playback(parts, length, chapters, marks):
                     else:
                         note = [at, sounding, pitch.midi, loud]
                         target.append(note)
+                        fresh.append(note)
                     if event.tie_start:
                         tied[pitch.midi] = note
                 holding = tied
+                slurred = (slurred or event.slur_start) and not event.slur_stop
+                # A solo phrase runs to the end of its slur or to a rest; outside a
+                # slur, a long note ends it too.
+                if index in soloing and fresh:
+                    phrase.append(max(fresh, key=lambda note: note[2]))
+                ended = not event.pitches or event.slur_stop or (not slurred and event.duration >= 2 * DIVISIONS)
+                if phrase and (index not in soloing or ended):
+                    _shape(phrase)
+                    phrase = []
                 at += event.duration
+        _shape(phrase)
         for sound, timeline in ((part.sound, notes), (part.instrument.sound, solo)):
             if timeline:
                 tracks.append({

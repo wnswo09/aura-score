@@ -1,9 +1,11 @@
 """Ask GPT for a score and hand back MusicXML.
 
-A piece is written in two stages. One call plans the whole piece: chapters
-with their own tempo and key, sections inside them, and the themes written out
-in notes. Then every chapter is written by a call of its own, all at once, from
-that plan, and musicxml.py joins them into one score. Asked for a long piece in
+A piece is written in stages. One call plans the whole piece: chapters with
+their own tempo and key, sections inside them, and the themes written out in
+notes. Each solo is then composed by a call of its own and checked by melody.py;
+a solo with faults goes back once with them listed. Then every chapter is
+written by a call of its own, all at once, around the solos, and musicxml.py
+joins them into one score. Asked for a long piece in
 a single reply, GPT ran out of ideas and circled back; asked for one chapter at a
 time against a plan, it only has to make that chapter good.
 
@@ -20,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import openai
 
+import melody
 import musicxml
 import orchestra
 import prompts
@@ -30,6 +33,8 @@ PLAN_EFFORT = "high"
 CHAPTER_EFFORT = "medium"
 PLAN_TOKENS = 40000
 CHAPTER_TOKENS = 60000
+SOLO_TOKENS = 30000
+MAX_SOLOS = 4
 TIMEOUT_SECONDS = 600
 # How many chapters are written at once.
 PARALLEL = 6
@@ -121,6 +126,65 @@ def _usable(plan):
     return chapters[:MAX_CHAPTERS]
 
 
+def _solos(plan):
+    """(chapter, section) for every solo a melodic instrument plays."""
+    found = []
+    for index, chapter in enumerate(plan["chapters"]):
+        for number, section in enumerate(chapter["sections"]):
+            soloist = orchestra.BY_ID.get(section.get("melody"))
+            alone = section.get("role") == "solo" or section.get("texture") == "solo"
+            if alone and soloist and soloist.section != "percussion":
+                found.append((index, number))
+    return found[:MAX_SOLOS]
+
+
+def _fill(request, written, bars):
+    """Every instrument's measures for a solo section: what the solo call wrote,
+    and rests for everyone it left out."""
+    given = {}
+    for part in written.get("parts") or []:
+        if isinstance(part, dict) and part.get("instrument") not in given:
+            given[part.get("instrument")] = ([str(m) for m in part.get("measures") or []] + ["R"] * bars)[:bars]
+    return [{"instrument": part.instrument.id, "measures": given.get(part.instrument.id, ["R"] * bars)}
+            for part in request.parts]
+
+
+def _compose_solo(request, plan, index, number):
+    """Write one solo on its own, check it, and send it back once if it has faults.
+
+    Returns (every instrument's measures, the calls' usage, (faults first time,
+    faults in the version kept)).
+    """
+    section = plan["chapters"][index]["sections"][number]
+    soloist = orchestra.BY_ID[section["melody"]]
+    bars = section["bars"]
+    time = plan.get("time_signature") if plan.get("time_signature") in musicxml.TIME_SIGNATURES else "4/4"
+    length = musicxml.measure_length(time)
+    brief = prompts.solo_brief(request, plan, index, number)
+    schema = prompts.solo_schema(request)
+    effort = os.environ.get("OPENAI_PLAN_EFFORT") or PLAN_EFFORT
+
+    def faults(written):
+        line = next((part["measures"] for part in _fill(request, written, bars)
+                     if part["instrument"] == soloist.id), ["R"] * bars)
+        return melody.critique(line, soloist, request.difficulty.id, length)
+
+    written, usage = _respond("orchestral_solo", prompts.SOLO, brief, schema, effort, SOLO_TOKENS)
+    usages = [usage]
+    first = kept = faults(written)
+    if first:
+        try:
+            revised, usage = _respond("orchestral_solo", prompts.SOLO, prompts.solo_revision(brief, written, first),
+                                      schema, effort, SOLO_TOKENS)
+            usages.append(usage)
+            again = faults(revised)
+            if len(again) <= len(first):
+                written, kept = revised, again
+        except ScoreServiceError as error:
+            log.warning("solo rewrite failed, keeping the first version: %s", error)
+    return _fill(request, written, bars), usages, (first, kept)
+
+
 def _write(request, plan, index):
     """Write one chapter, with one more try if the first reply is unusable."""
     for attempt in (1, 2):
@@ -160,6 +224,28 @@ def generate(request, progress=lambda text: None):
         raise ScoreServiceError("GPT 가 곡을 설계하지 못했습니다. 다시 시도해 주세요.")
     planned = time.monotonic() - started
 
+    # Solos are composed before the chapters, so each chapter can lead into its
+    # solo and out of it. A solo that fails is left to the chapter to write.
+    solos, verdicts = _solos(plan), []
+    if solos:
+        progress(f"솔로 {len(solos)}곳을 따로 작곡하는 중 (0/{len(solos)} 완성)")
+        with ThreadPoolExecutor(max_workers=min(len(solos), PARALLEL)) as pool:
+            work = {pool.submit(_compose_solo, request, plan, index, number): (index, number)
+                    for index, number in solos}
+            for job in as_completed(work):
+                index, number = work[job]
+                try:
+                    parts, usages, verdict = job.result()
+                except ScoreServiceError as error:
+                    log.warning("solo in chapter %d failed; the chapter writes it: %s", index + 1, error)
+                    continue
+                plan["chapters"][index]["sections"][number]["solo_music"] = parts
+                tokens_in += sum(usage.input_tokens for usage in usages)
+                tokens_out += sum(usage.output_tokens for usage in usages)
+                verdicts.append(verdict)
+                progress(f"솔로 {len(solos)}곳을 따로 작곡하는 중 ({len(verdicts)}/{len(solos)} 완성)")
+    soloed = time.monotonic() - started - planned
+
     music, done = [None] * count, 0
     progress(f"{count}개 장을 동시에 쓰는 중 (0/{count} 완성)")
     with ThreadPoolExecutor(max_workers=min(count, PARALLEL)) as pool:
@@ -183,10 +269,11 @@ def generate(request, progress=lambda text: None):
     repetition = score["repetition"]
     log.info(
         "score: %s mode, %d parts, %d chapters, %d bars, %ds of music (asked %ds), "
-        "plan %.0fs + chapters %.0fs, tokens in %d / out %d, %d repairs, "
-        "repetition exact %d%% / rhythm %d%% / %d looped bars",
+        "plan %.0fs + solos %.0fs + chapters %.0fs, tokens in %d / out %d, %d repairs, "
+        "repetition exact %d%% / rhythm %d%% / %d looped bars, solo faults %s",
         request.mode, len(request.parts), count, score["measures"], score["duration"],
-        request.minutes * 60, planned, time.monotonic() - started - planned, tokens_in, tokens_out,
-        score["repairs"], repetition["exact"], repetition["rhythm"], repetition["loops"],
+        request.minutes * 60, planned, soloed, time.monotonic() - started - planned - soloed,
+        tokens_in, tokens_out, score["repairs"], repetition["exact"], repetition["rhythm"],
+        repetition["loops"], ", ".join(f"{len(first)}->{len(kept)}" for first, kept in verdicts) or "-",
     )
     return score, plan

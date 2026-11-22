@@ -1,10 +1,12 @@
 """What GPT is told, and the JSON it has to answer in.
 
-A piece is written in two stages (see score_service.py). One call plans the
-whole piece: its chapters, each with its own tempo and key, and its themes
-written out in notes. Then every chapter is written by a call of its own, all at
-the same time, from that plan. Nobody has to hold five minutes of music in their
-head at once, which is what made long single replies circle back on themselves.
+A piece is written in stages (see score_service.py). One call plans the whole
+piece: its chapters, each with its own tempo and key, and its themes written out
+in notes. Each solo passage is then composed by a call of its own, with nothing
+else to think about. Last, every chapter is written by a call of its own, all at
+the same time, around the solos. Nobody has to hold five minutes of music in
+their head at once, which is what made long single replies circle back on
+themselves.
 """
 
 import random
@@ -104,7 +106,11 @@ enough that chapters written apart sound like one piece.
   against a new countermelody. No two sections in the whole piece use the same
   material in the same way.
 - Give the lead one solo passage, and give at least one other instrument a
-  short solo of its own in a different chapter.
+  short solo of its own in a different chapter. A solo section has role solo
+  and texture solo, lasts 4 to 8 bars, and is one instrument singing a real
+  melody over the barest support: a held pedal or soft sustained chords
+  (accompaniment pedal or sustained), almost never nothing at all. Each solo is
+  composed separately, so say in its material what it should grow from.
 - One climax for the whole piece, in a chapter about two thirds to three
   quarters of the way through. The last chapter brings theme A home, changed by
   what has happened, and ends the piece.
@@ -149,6 +155,11 @@ per instrument.
 - Begin the way the plan says this chapter starts and end the way it says it
   ends. Unless this is the last chapter, do not end on a cadence that sounds
   final: leave the music open for the next chapter.
+- A section marked ALREADY WRITTEN is a solo composed separately; it is shown
+  to you note for note. Write every measure of every part in it as R, because
+  it is filled in afterwards. Lead into it and out of it: the section before
+  hands over to the solo's first note and harmony, and the section after picks
+  up from where the solo ends.
 
 ## Tell a story; do not loop
 - Write the lead like someone speaking with feeling: phrases of different
@@ -188,6 +199,59 @@ A piece that just stops has failed, however good the rest was. Land it.
 - Match the requested difficulty in rhythm, register and key.
 - A style may mention instruments this ensemble doesn't have. Carry its
   character with the instruments you are given; never add parts.
+"""
+
+
+SOLO = f"""\
+You are an orchestral composer writing one solo passage inside a larger piece:
+a few bars in which one instrument sings alone over the barest support. Every
+note is exposed, so it has to be a real melody, the kind a listener can hum
+afterwards. You write a full score in C: every part at concert (sounding) pitch.
+
+## Output
+- harmony: one chord per measure, as you intend it ("Gm", "D7/F#", "Eb"), so
+  the line and its support agree.
+- shape: one sentence on the phrases (how many bars each) and where the single
+  high point falls.
+- parts: the soloist's line and one to three instruments of support. Leave
+  every other instrument out.
+
+{NOTATION}
+## Hard rules
+1. The durations in every measure add up to exactly one bar: 4/4 = one whole
+   note, 3/4 = 2., 2/4 = 2, 6/8 = 2. (six eighths). Count every measure.
+2. Stay inside each part's range and never exceed its number of simultaneous notes.
+3. No tuplets, grace notes, or anything else not described above.
+4. Every part you write has exactly the section's number of measures.
+
+## Writing the solo
+- Sing. Move mostly by step. A leap is an event: a third up to a sixth, an
+  octave only to reach the high point. After a leap of a fourth or more, turn
+  back by step. Never leap a tritone or a seventh, and never make two leaps in a
+  row in the same direction unless together they spell one chord.
+- Phrase. Shape the solo as two or more phrases of two or four bars, like a
+  question and its answer. Each phrase rises and settles, and ends on a longer
+  note that belongs to the chord. Put each phrase under one slur with no rests
+  inside it; breathe between phrases with a short rest, which a wind player
+  needs at least every four bars.
+- One high point. The highest note comes once, about two thirds of the way
+  through, on a strong beat, reached by step or by a rising leap; then the line
+  comes down.
+- Rhythm with a profile. Take one rhythmic idea from the theme (a dotted figure,
+  a long-short pair, a pickup) and let it come back changed. Mix long notes with
+  shorter ones: no stream of equal values, and no hiccup of rests.
+- Imply the harmony. Chord tones on the strong beats, passing and neighbour
+  notes between them, so the line makes sense even heard alone.
+- Register. Keep the line in the soloist's singing register, given below.
+- Expression. Dynamics follow the shape: begin softly, swell toward the high
+  point, fall back at the end.
+- Begin where the music before leaves off and end so the music after can pick up.
+
+## The support
+- One to three instruments, soft (pp or p), below the soloist and out of its
+  way: a held pedal, or sustained chords that change only when the harmony
+  does. No rhythm of their own and nothing that competes with the melody. They
+  may drop out for a bar to leave the soloist truly alone.
 """
 
 
@@ -304,9 +368,63 @@ def chapter_brief(request, plan, index):
               f"Starts: {chapter.get('starts')}",
               f"Ends: {chapter.get('ends')}",
               "Sections:"]
-    lines += [_section_line(section) for section in chapter["sections"]]
+    for section in chapter["sections"]:
+        lines.append(_section_line(section))
+        written = section.get("solo_music")
+        if written:
+            lines.append(f"  ALREADY WRITTEN (solo for {section.get('melody')}): write every measure of "
+                         "every part as R. It goes:")
+            lines += [f"    {part['instrument']}: " + " | ".join(part["measures"])
+                      for part in written if any(m.strip() != "R" for m in part["measures"])]
     lines += [""] + _parts(request)
     return "\n".join(lines)
+
+
+def solo_brief(request, plan, index, number):
+    """The brief for the solo that is section `number` of chapter `index`."""
+    chapter = plan["chapters"][index]
+    section = chapter["sections"][number]
+    tempo = orchestra.tempo_for(chapter["tempo"])
+    soloist = orchestra.BY_ID[section["melody"]]
+    low, high = soloist.singing_for(request.difficulty.id)
+    sections = chapter["sections"]
+    lines = [
+        f"Write the solo \"{section.get('name')}\" in chapter {index + 1} of {len(plan['chapters'])}, "
+        f"\"{chapter.get('title')}\".",
+        f"Soloist: {soloist.id}. Its singing register: {_note_name(low)} to {_note_name(high)}.",
+        f"Length: exactly {section.get('bars')} measures. Key: {chapter.get('key')}. "
+        f"Time signature: {plan.get('time_signature')}. Tempo: {tempo.term}, quarter = {tempo.bpm}.",
+        f"Dynamic: around {section.get('dynamic')}. Support: {section.get('accompaniment')}.",
+        f"Material: {section.get('material')}",
+        f"What happens here: {section.get('idea')}",
+    ]
+    if number:
+        lines.append("Before it: " + _section_line(sections[number - 1])[2:])
+    elif index:
+        lines.append(f"Before it: the chapter before ends: {plan['chapters'][index - 1].get('ends')}")
+    if number + 1 < len(sections):
+        lines.append("After it: " + _section_line(sections[number + 1])[2:])
+    else:
+        lines.append(f"After it: the chapter ends: {chapter.get('ends')}")
+    lines += _character(request)
+    lines += ["", f"The piece: {plan.get('title')}. {plan.get('description')}",
+              f"Themes, in the home key {plan.get('key')}:"]
+    for theme in plan.get("themes") or []:
+        lines.append(f"- {theme.get('name')} ({theme.get('instrument')}; {theme.get('character')}): "
+                     + " | ".join(theme.get("measures") or []))
+    lines += [""] + _parts(request)
+    return "\n".join(lines)
+
+
+def solo_revision(brief, written, issues):
+    """The same brief again, with the first attempt and what is wrong with it."""
+    shown = "\n".join(f"- {part['instrument']}: " + " | ".join(part["measures"]) for part in written["parts"])
+    return "\n".join([
+        brief, "",
+        "Your first version:", f"harmony: {' | '.join(written.get('harmony') or [])}", shown, "",
+        "What is wrong with it:", *[f"- {issue}" for issue in issues], "",
+        "Write the passage again, fixing all of these and keeping what was good about it.",
+    ])
 
 
 # ---------------------------------------------------------------- schemas
@@ -370,6 +488,18 @@ def plan_schema(request):
         "ending": _choice(orchestra.ENDING_BY_ID),
         "themes": {"type": "array", "items": theme},
         "chapters": {"type": "array", "items": chapter},
+    })
+
+
+def solo_schema(request):
+    part = _record({
+        "instrument": _choice(playing.instrument.id for playing in request.parts),
+        "measures": {"type": "array", "items": TEXT},
+    })
+    return _record({
+        "harmony": {"type": "array", "items": TEXT},
+        "shape": TEXT,
+        "parts": {"type": "array", "items": part},
     })
 
 

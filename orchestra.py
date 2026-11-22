@@ -34,48 +34,55 @@ class Instrument:
     octave: int = 0         # written = sounding + 12 * octave
     midi_program: int = 1
     sound: str = ""         # General MIDI soundfont name for playback
+    singing: tuple = (0, 0)  # where a solo on it sounds best, sounding
 
     def range_for(self, difficulty):
         if difficulty == "beginner":
             return self.easy_low, self.easy_high
         return self.low, self.high
 
+    def singing_for(self, difficulty):
+        """The register a solo should live in: the instrument's most expressive
+        stretch, inside whatever range the difficulty allows."""
+        low, high = self.range_for(difficulty)
+        return max(low, self.singing[0]), min(high, self.singing[1])
+
 
 # Score order, top to bottom. Strings count a whole section; everything else
 # counts players sharing one staff.
 INSTRUMENTS = [
     Instrument("piccolo", "피콜로", "Piccolo", "Picc.", "woodwind", 74, 108, 74, 96,
-               ("G",), 1, octave=-1, midi_program=73, sound="piccolo"),
+               ("G",), 1, octave=-1, midi_program=73, sound="piccolo", singing=(79, 96)),
     Instrument("flute", "플루트", "Flute", "Fl.", "woodwind", 60, 96, 60, 91,
-               ("G",), 3, numbered=True, midi_program=74, sound="flute"),
+               ("G",), 3, numbered=True, midi_program=74, sound="flute", singing=(64, 88)),
     Instrument("oboe", "오보에", "Oboe", "Ob.", "woodwind", 58, 91, 60, 86,
-               ("G",), 3, numbered=True, midi_program=69, sound="oboe"),
+               ("G",), 3, numbered=True, midi_program=69, sound="oboe", singing=(62, 84)),
     Instrument("clarinet", "클라리넷", "Clarinet", "Cl.", "woodwind", 50, 91, 52, 82,
-               ("G",), 3, numbered=True, midi_program=72, sound="clarinet"),
+               ("G",), 3, numbered=True, midi_program=72, sound="clarinet", singing=(55, 82)),
     Instrument("bassoon", "바순", "Bassoon", "Bsn.", "woodwind", 34, 75, 36, 67,
-               ("F", "C4"), 3, numbered=True, midi_program=71, sound="bassoon"),
+               ("F", "C4"), 3, numbered=True, midi_program=71, sound="bassoon", singing=(41, 67)),
     Instrument("horn", "호른", "Horn", "Hn.", "brass", 35, 77, 48, 72,
-               ("G", "F"), 4, numbered=True, midi_program=61, sound="french_horn"),
+               ("G", "F"), 4, numbered=True, midi_program=61, sound="french_horn", singing=(53, 72)),
     Instrument("trumpet", "트럼펫", "Trumpet", "Tpt.", "brass", 52, 82, 55, 77,
-               ("G",), 3, numbered=True, midi_program=57, sound="trumpet"),
+               ("G",), 3, numbered=True, midi_program=57, sound="trumpet", singing=(58, 79)),
     Instrument("trombone", "트롬본", "Trombone", "Tbn.", "brass", 40, 72, 41, 65,
-               ("F", "C4"), 3, numbered=True, midi_program=58, sound="trombone"),
+               ("F", "C4"), 3, numbered=True, midi_program=58, sound="trombone", singing=(45, 65)),
     Instrument("tuba", "튜바", "Tuba", "Tba.", "brass", 26, 65, 29, 58,
-               ("F",), 1, midi_program=59, sound="tuba"),
+               ("F",), 1, midi_program=59, sound="tuba", singing=(34, 55)),
     Instrument("timpani", "팀파니", "Timpani", "Timp.", "percussion", 38, 57, 38, 57,
-               ("F",), 1, midi_program=48, sound="timpani"),
+               ("F",), 1, midi_program=48, sound="timpani", singing=(38, 57)),
     Instrument("violin1", "제1바이올린", "Violin I", "Vln. I", "strings", 55, 100, 55, 83,
-               ("G",), 20, midi_program=41, sound="violin"),
+               ("G",), 20, midi_program=41, sound="violin", singing=(62, 88)),
     Instrument("violin2", "제2바이올린", "Violin II", "Vln. II", "strings", 55, 96, 55, 79,
-               ("G",), 20, midi_program=41, sound="violin"),
+               ("G",), 20, midi_program=41, sound="violin", singing=(62, 86)),
     # Always alto: one clef serves the whole part, and a violist reads a high
     # melody in alto far more easily than low accompaniment in treble.
     Instrument("viola", "비올라", "Viola", "Vla.", "strings", 48, 88, 48, 74,
-               ("C3",), 16, midi_program=42, sound="viola"),
+               ("C3",), 16, midi_program=42, sound="viola", singing=(55, 79)),
     Instrument("cello", "첼로", "Cello", "Vc.", "strings", 36, 81, 36, 64,
-               ("F", "C4"), 14, midi_program=43, sound="cello"),
+               ("F", "C4"), 14, midi_program=43, sound="cello", singing=(43, 69)),
     Instrument("contrabass", "콘트라베이스", "Contrabass", "Cb.", "strings", 28, 62, 28, 50,
-               ("F",), 10, octave=1, midi_program=44, sound="contrabass"),
+               ("F",), 10, octave=1, midi_program=44, sound="contrabass", singing=(31, 50)),
 ]
 BY_ID = {instrument.id: instrument for instrument in INSTRUMENTS}
 STRINGS = [instrument for instrument in INSTRUMENTS if instrument.section == "strings"]
